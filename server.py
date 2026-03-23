@@ -93,7 +93,20 @@ async def scrape_url(payload: dict):
     session_id = uuid.uuid4().hex
     session = create_session(session_id)
 
-    result = await scrape_product_url(url, session_id)
+    try:
+        result = await scrape_product_url(url, session_id)
+    except Exception as e:
+        print(f"[SERVER] Scrape crashed: {type(e).__name__}: {e}")
+        return {
+            "success": False,
+            "session_id": session_id,
+            "platform": "unknown",
+            "title": "",
+            "description": "",
+            "features": [],
+            "images": [],
+            "error": f"Scraper error: {type(e).__name__}: {e}",
+        }
 
     # Update session with scraped data
     session["competitor"]["mode"] = "url"

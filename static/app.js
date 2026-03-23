@@ -241,14 +241,36 @@ async function scrapeCompetitorUrl() {
     const btn = document.getElementById('btn-scrape');
     btn.disabled = true;
     btn.textContent = 'Analyzing...';
-    showStatus(1, 'Scraping product page...');
+    showStatus(1, 'Scraping product page... this takes 20-30 seconds, please wait.');
+
+    // Timeout after 90 seconds to prevent infinite hang
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
 
     try {
         const res = await fetch('/api/scrape', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
+            body: JSON.stringify({ url }),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
+
+        // Handle non-OK HTTP responses (500, 422, etc.)
+        if (!res.ok) {
+            let errorMsg = `Server error (${res.status})`;
+            try {
+                const errData = await res.json();
+                errorMsg = errData.detail || errData.error || errorMsg;
+            } catch (_) {
+                // Response wasn't JSON — try text
+                try { errorMsg = (await res.text()).substring(0, 200) || errorMsg; } catch (_) {}
+            }
+            console.error('Scrape failed:', res.status, errorMsg);
+            showStatus(1, errorMsg + ' You can switch to the "Upload Images" tab.', 'error');
+            return;
+        }
+
         const data = await res.json();
 
         if (data.success) {
@@ -263,7 +285,13 @@ async function scrapeCompetitorUrl() {
             if (data.session_id) state.sessionId = data.session_id;
         }
     } catch (err) {
-        showStatus(1, 'Network error. Please try again.', 'error');
+        clearTimeout(timeoutId);
+        console.error('Scrape error:', err);
+        if (err.name === 'AbortError') {
+            showStatus(1, 'Scraping timed out after 90 seconds. Try a different URL or upload images manually.', 'error');
+        } else {
+            showStatus(1, 'Could not reach server. Make sure the server is running (.\\serve).', 'error');
+        }
     } finally {
         btn.disabled = false;
         btn.textContent = 'Analyze URL';
