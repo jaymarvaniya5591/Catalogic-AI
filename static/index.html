@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ruva Catalog Generator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+
+        <!-- Header -->
+        <header class="header">
+            <div class="header-badge">Catalog Generator</div>
+            <h1>Ruva <span class="gold">Catalog Generator</span></h1>
+            <p class="subtitle">From competitor link to premium catalog images — automated, intelligent, consistent.</p>
+        </header>
+
+        <!-- Step Progress Bar -->
+        <nav class="step-progress">
+            <div class="step-indicator active" data-step="1">
+                <div class="step-circle">1</div>
+                <span class="step-label">Competitor</span>
+            </div>
+            <div class="step-connector"></div>
+            <div class="step-indicator" data-step="2">
+                <div class="step-circle">2</div>
+                <span class="step-label">Your Product</span>
+            </div>
+            <div class="step-connector"></div>
+            <div class="step-indicator" data-step="3">
+                <div class="step-circle">3</div>
+                <span class="step-label">Analysis</span>
+            </div>
+            <div class="step-connector"></div>
+            <div class="step-indicator" data-step="4">
+                <div class="step-circle">4</div>
+                <span class="step-label">Hero Image</span>
+            </div>
+            <div class="step-connector"></div>
+            <div class="step-indicator" data-step="5">
+                <div class="step-circle">5</div>
+                <span class="step-label">Catalog</span>
+            </div>
+        </nav>
+
+        <!-- ═══════════════════════════════════════════ -->
+        <!-- Step 1: Competitor Reference                -->
+        <!-- ═══════════════════════════════════════════ -->
+        <section class="step-section active" id="step-1">
+            <div class="step-card">
+                <h2>Competitor Reference</h2>
+                <p class="step-description">Paste a competitor's Amazon or Flipkart product URL, or upload their catalog images manually.</p>
+
+                <!-- Mode toggle -->
+                <div class="input-tabs">
+                    <button class="tab-btn active" data-tab="url">Paste URL</button>
+                    <button class="tab-btn" data-tab="upload">Upload Images</button>
+                </div>
+
+                <!-- URL mode -->
+                <div class="tab-content active" id="tab-url">
+                    <div class="input-group">
+                        <input type="url" id="competitor-url" class="text-input"
+                               placeholder="https://www.amazon.in/dp/..." />
+                        <button class="btn btn-primary" id="btn-scrape">Analyze URL</button>
+                    </div>
+                    <p class="input-hint">Supports Amazon.in, Amazon.com, and Flipkart product pages</p>
+                    <div id="scraped-results" style="display: none; margin-top: 20px;"></div>
+                </div>
+
+                <!-- Upload mode -->
+                <div class="tab-content" id="tab-upload">
+                    <div class="upload-zone" id="competitor-upload-zone">
+                        <div class="upload-icon">
+                            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </div>
+                        <p>Drag & drop competitor catalog images here</p>
+                        <p class="upload-hint">or click to browse</p>
+                        <input type="file" id="competitor-files" multiple accept="image/*" hidden />
+                    </div>
+                    <div class="image-preview-grid" id="competitor-preview-grid"></div>
+                    <div class="input-group stacked" style="margin-top: 16px;">
+                        <label class="input-label">Product Description (optional)</label>
+                        <textarea id="competitor-description" class="text-input textarea"
+                                  placeholder="Paste the competitor's product description here..."
+                                  rows="3"></textarea>
+                    </div>
+                </div>
+
+                <!-- Status -->
+                <div class="status-message" id="step1-status"></div>
+
+                <!-- Navigation -->
+                <div class="step-nav">
+                    <div></div>
+                    <button class="btn btn-primary" id="btn-step1-next" disabled>Continue</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════ -->
+        <!-- Step 2: Your Product                        -->
+        <!-- ═══════════════════════════════════════════ -->
+        <section class="step-section" id="step-2">
+            <div class="step-card">
+                <h2>Your Product</h2>
+                <p class="step-description">Upload images of your product and add a description. The more detail, the better the results.</p>
+
+                <!-- Product image upload -->
+                <div class="upload-zone" id="product-upload-zone">
+                    <div class="upload-icon">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </div>
+                    <p>Drag & drop your product images here</p>
+                    <p class="upload-hint">or click to browse (recommended: 2–5 images)</p>
+                    <input type="file" id="product-files" multiple accept="image/*" hidden />
+                </div>
+                <div class="image-preview-grid" id="product-preview-grid"></div>
+
+                <!-- Product description -->
+                <div class="input-group stacked" style="margin-top: 20px;">
+                    <label class="input-label">Product Description</label>
+                    <textarea id="product-description" class="text-input textarea"
+                              placeholder="Describe your product: name, material, finish, key features, dimensions..."
+                              rows="4"></textarea>
+                </div>
+
+                <!-- Status -->
+                <div class="status-message" id="step2-status"></div>
+
+                <!-- Navigation -->
+                <div class="step-nav">
+                    <button class="btn btn-secondary" id="btn-step2-back">Back</button>
+                    <button class="btn btn-primary" id="btn-step2-next" disabled>Analyze & Continue</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════ -->
+        <!-- Step 3: Deep Analysis & Smart Questions     -->
+        <!-- ═══════════════════════════════════════════ -->
+        <section class="step-section" id="step-3">
+            <div class="step-card">
+                <h2>Deep Analysis</h2>
+                <p class="step-description">Here's what we found in the competitor's catalog. Answer the questions below to improve your results, or skip any for smart defaults.</p>
+
+                <!-- Analysis results -->
+                <div class="analysis-section" id="analysis-results">
+                    <h3 class="section-subtitle">Competitor Catalog Breakdown</h3>
+                    <div class="analysis-grid" id="analysis-grid">
+                        <div class="placeholder-message">Analysis results will appear here...</div>
+                    </div>
+                </div>
+
+                <!-- Smart questions -->
+                <div class="questions-section" id="questions-section">
+                    <h3 class="section-subtitle">Smart Questions</h3>
+                    <p class="section-hint">Answer to improve quality, or skip for intelligent defaults.</p>
+                    <div class="questions-list" id="questions-list">
+                        <div class="placeholder-message">Questions will appear after analysis...</div>
+                    </div>
+                </div>
+
+                <!-- Status -->
+                <div class="status-message" id="step3-status"></div>
+
+                <!-- Navigation -->
+                <div class="step-nav">
+                    <button class="btn btn-secondary" id="btn-step3-back">Back</button>
+                    <button class="btn btn-primary" id="btn-step3-next" disabled>Generate Hero Image</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════ -->
+        <!-- Step 4: Hero Image                          -->
+        <!-- ═══════════════════════════════════════════ -->
+        <section class="step-section" id="step-4">
+            <div class="step-card">
+                <h2>Hero Image</h2>
+                <p class="step-description">This is the visual anchor for your entire catalog. All other images will be generated to match this look.</p>
+
+                <!-- Hero display -->
+                <div class="hero-container" id="hero-container">
+                    <div class="hero-placeholder" id="hero-placeholder">
+                        <div class="spinner"></div>
+                        <p>Generating your hero image...</p>
+                    </div>
+                    <img id="hero-image" class="hero-image" src="" alt="Hero product image" style="display:none;" />
+                </div>
+
+                <!-- Action buttons -->
+                <div class="hero-actions" id="hero-actions" style="display:none;">
+                    <button class="btn btn-primary" id="btn-accept-hero">Accept & Continue</button>
+                    <button class="btn btn-secondary" id="btn-regenerate-hero">Regenerate</button>
+                    <label class="btn btn-secondary" style="cursor:pointer;">
+                        Upload My Own
+                        <input type="file" id="hero-upload" accept="image/*" hidden />
+                    </label>
+                </div>
+
+                <!-- Status -->
+                <div class="status-message" id="step4-status"></div>
+
+                <!-- Navigation -->
+                <div class="step-nav">
+                    <button class="btn btn-secondary" id="btn-step4-back">Back</button>
+                    <button class="btn btn-primary" id="btn-step4-next" disabled>Generate Full Catalog</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════ -->
+        <!-- Step 5: Full Catalog                        -->
+        <!-- ═══════════════════════════════════════════ -->
+        <section class="step-section" id="step-5">
+            <div class="step-card">
+                <h2>Your Catalog</h2>
+                <p class="step-description">Your complete catalog is being generated. Each image matches the competitor's intent with your product's look.</p>
+
+                <!-- Progress bar -->
+                <div class="progress-bar-container" id="catalog-progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                    </div>
+                    <span class="progress-text" id="progress-text">0 / 0 images</span>
+                </div>
+
+                <!-- Catalog grid -->
+                <div class="catalog-grid" id="catalog-grid">
+                    <div class="placeholder-message" id="catalog-placeholder">Catalog images will appear here as they generate...</div>
+                </div>
+
+                <!-- Download -->
+                <div class="download-section" id="download-section" style="display:none;">
+                    <button class="btn btn-primary btn-large" id="btn-download">Download Catalog (ZIP)</button>
+                </div>
+
+                <!-- Status -->
+                <div class="status-message" id="step5-status"></div>
+
+                <!-- Navigation -->
+                <div class="step-nav">
+                    <button class="btn btn-secondary" id="btn-step5-back">Back</button>
+                    <div></div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
