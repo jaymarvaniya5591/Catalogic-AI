@@ -197,6 +197,173 @@ def should_skip_question_for_claim(
     return False
 
 
+def _evidence_from_snippets(snippets: list[str], prefer_keywords: list[str] | None = None) -> str:
+    if not snippets:
+        return ""
+    snippets = [s for s in snippets if s]
+    if not snippets:
+        return ""
+    text = " ".join(snippets).lower()
+    if prefer_keywords:
+        for kw in prefer_keywords:
+            k = kw.lower()
+            idx = text.find(k)
+            if idx != -1:
+                # Return snippet that contains keyword if possible
+                for s in snippets:
+                    if k in s.lower():
+                        return s[:200].strip()
+    return snippets[0][:200].strip()
+
+
+def extract_attribute_claims_from_visible_text(
+    visible_text_snippets: list[str],
+) -> list[dict]:
+    """
+    Convert OCR-visible text snippets into structured competitor claims.
+    This is deliberately conservative: it only creates claims for common sanitaryware specs.
+    """
+    t = " ".join(visible_text_snippets or []).lower()
+    claims: list[dict] = []
+
+    def add_claim(attribute_id: str, label: str, value: str, answer_type: str = "text", options=None, evidence_keywords=None, confidence: float = 0.85):
+        if not attribute_id or not value:
+            return
+        evidence_text = _evidence_from_snippets(visible_text_snippets or [], prefer_keywords=evidence_keywords)
+        claims.append({
+            "attribute_id": attribute_id,
+            "label": label,
+            "value": value,
+            "answer_type": answer_type,
+            "options": options,
+            "confidence": confidence,
+            "evidence_text": evidence_text,
+        })
+
+    # Flush system type
+    if "siphonic" in t:
+        add_claim(
+            "flush_system_type",
+            "Flush system type",
+            "siphonic flush",
+            answer_type="choice",
+            options=["siphonic flush", "jet flush", "washdown flush"],
+            evidence_keywords=["siphonic"],
+        )
+    elif "washdown" in t:
+        add_claim(
+            "flush_system_type",
+            "Flush system type",
+            "washdown flush",
+            answer_type="choice",
+            options=["siphonic flush", "jet flush", "washdown flush"],
+            evidence_keywords=["washdown"],
+        )
+    elif "jet flush" in t or ("jet" in t and "flush" in t):
+        add_claim(
+            "flush_system_type",
+            "Flush system type",
+            "jet flush",
+            answer_type="choice",
+            options=["siphonic flush", "jet flush", "washdown flush"],
+            evidence_keywords=["jet"],
+        )
+
+    # Trap / outlet type
+    if "s-trap" in t or "s trap" in t:
+        add_claim(
+            "s_trap_or_p_trap",
+            "Trap outlet type",
+            "S trap",
+            answer_type="choice",
+            options=["S trap", "P trap"],
+            evidence_keywords=["s-trap", "s trap"],
+        )
+    elif "p-trap" in t or "p trap" in t:
+        add_claim(
+            "s_trap_or_p_trap",
+            "Trap outlet type",
+            "P trap",
+            answer_type="choice",
+            options=["S trap", "P trap"],
+            evidence_keywords=["p-trap", "p trap"],
+        )
+
+    # Rough-in inches / outlet connection distance (often described as X inches from the wall)
+    if "inch" in t and ("rough" in t or "from the wall" in t or "outlet" in t):
+        import re
+
+        # Examples: "9 inches from wall" / "9 inch rough-in"
+        m = re.search(r"([0-9]{1,2}(?:\\.[0-9])?)\\s*(?:inches|inch|in)\\b", t)
+        if m:
+            add_claim(
+                "rough_in_inches",
+                "Rough-in distance",
+                f"{m.group(1)} inch",
+                answer_type="text",
+                options=None,
+                evidence_keywords=["rough", "inch"],
+                confidence=0.8,
+            )
+
+    # Bumper design
+    if "bumper" in t:
+        add_claim(
+            "bumper_design",
+            "Bumper design",
+            "bumper",
+            answer_type="choice",
+            options=["bumper", "no bumper / standard mechanism"],
+            evidence_keywords=["bumper"],
+        )
+
+    # Rim type
+    if "rimless" in t:
+        add_claim(
+            "rim_type",
+            "Rim type",
+            "rimless",
+            answer_type="choice",
+            options=["rimless", "rimmed"],
+            evidence_keywords=["rimless"],
+        )
+    elif "rim" in t:
+        add_claim(
+            "rim_type",
+            "Rim type",
+            "rimmed",
+            answer_type="choice",
+            options=["rimless", "rimmed"],
+            evidence_keywords=["rim"],
+            confidence=0.6,
+        )
+
+    # Soft close seat / slow close
+    if "soft close" in t or "soft-closing" in t or "soft closing" in t:
+        add_claim(
+            "seat_close_type",
+            "Seat closing type",
+            "soft close",
+            answer_type="choice",
+            options=["soft close", "standard close"],
+            evidence_keywords=["soft close", "soft closing"],
+        )
+
+    # Material / finish
+    if "ceramic" in t:
+        add_claim(
+            "material_finish",
+            "Material / finish",
+            "ceramic",
+            answer_type="choice",
+            options=["ceramic", "porcelain", "stainless/chrome (metal)"],
+            evidence_keywords=["ceramic"],
+            confidence=0.75,
+        )
+
+    return claims
+
+
 # ── Routes ──
 
 @app.get("/")
@@ -349,6 +516,7 @@ async def analyze(payload: dict):
 
         # Build questions directly from Gemini "claims"
         questions: list[dict] = []
+        question_ids: set[str] = set()
         product_description = product.get("description", "")
 
         for img in analysis.get("images", []) or []:
@@ -392,6 +560,55 @@ async def analyze(payload: dict):
                     "confidence": confidence,
                     "source_value": value,
                 })
+                question_ids.add(f"{attribute_id}_img{img_index}")
+
+            # If Gemini claims are incomplete/missing, fall back to heuristics on visible OCR snippets.
+            visible_text_snippets = img.get("visible_text_snippets", []) or []
+            heuristic_claims = extract_attribute_claims_from_visible_text(visible_text_snippets)
+            for claim in heuristic_claims:
+                attribute_id = (claim.get("attribute_id") or "").strip()
+                if not attribute_id:
+                    continue
+
+                qid = f"{attribute_id}_img{img_index}"
+                if qid in question_ids:
+                    continue
+
+                if should_skip_question_for_claim(
+                    attribute_id=attribute_id,
+                    claim_value=claim.get("value") or "",
+                    product_description=product_description,
+                    user_values=user_values,
+                ):
+                    continue
+
+                answer_type = claim.get("answer_type") or "text"
+                question_type = "text"
+                options = None
+                if answer_type == "choice":
+                    question_type = "choice"
+                    options = claim.get("options") or None
+                elif answer_type == "image":
+                    question_type = "image"
+
+                label = (claim.get("label") or attribute_id).strip()
+                value = (claim.get("value") or "").strip()
+                evidence_text = (claim.get("evidence_text") or "").strip()
+                confidence = float(claim.get("confidence", 0) or 0)
+
+                questions.append({
+                    "id": qid,
+                    "attribute_id": attribute_id,
+                    "group": {"kind": "competitor_image", "image_index": img_index},
+                    "text": f"From the competitor image, it appears `{label}` is `{value}`. Is this true for your product?",
+                    "type": question_type,
+                    "options": options,
+                    "default_value": value,
+                    "context": evidence_text,
+                    "confidence": confidence,
+                    "source_value": value,
+                })
+                question_ids.add(qid)
 
         # Suggested additions: ask for their required claims too (skip only if we can infer from user text)
         for add in analysis.get("suggested_additions", []) or []:

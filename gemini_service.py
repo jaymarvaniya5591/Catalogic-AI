@@ -142,8 +142,12 @@ For each image (numbered 0 through {n - 1}), identify:
 4. "priority": "high", "medium", or "low" — how important this image type is for a catalog
 5. "style_prompt": A short reusable prompt fragment (1-2 sentences) describing the visual style/messages for this image type (NOT the actual product specs).
 
-Task B — Extract factual product claims visible in each image:
-From each image, extract all technical or product attribute information that is explicitly communicated (on-image text, icons, diagrams, labeled parts, measurements, callouts, etc.).
+Task B — OCR-style extraction + factual product claims visible in each image:
+From each image, do two things:
+1) Extract verbatim visible text snippets (OCR):
+- Output "visible_text_snippets": a list of short snippets (max 10), each snippet should be a verbatim fragment from the image that contains technical or specification text (flush/trap/outlet/rough-in/dimensions/ratings/etc.).
+2) Extract structured claims:
+From the same image, extract all technical or product attribute information that is explicitly communicated (on-image text, icons, diagrams, labeled parts, measurements, callouts, etc.).
 For each extracted claim output:
 - "attribute_id": stable snake_case id (examples: flush_system_type, trap_outlet_type, s_trap_or_p_trap, rough_in_inches, rim_type, bumper_design, dimensions, material_finish, flush_method, water_tank_compatibility)
 - "label": human readable label (short)
@@ -153,7 +157,7 @@ For each extracted claim output:
 - "confidence": number 0-1 (how confident you are that value is correct from the image)
 - "evidence_text": short snippet of what you see (max ~20 words). If you cannot quote, set to "".
 
-Only output claims with confidence >= 0.55. If uncertain, omit the claim.
+Only output claims with confidence >= 0.25. If text exists but you're unsure, still output a claim with lower confidence and best-effort value.
 
 Task C — Suggested missing images (additions):
 Study all images + the provided product description and infer whether there are vital catalog messages missing from the competitor images.
@@ -173,6 +177,7 @@ Return valid JSON with this exact structure:
       "key_elements": [...],
       "priority": "...",
       "style_prompt": "...",
+      "visible_text_snippets": [...],
       "claims": [
         {{
           "attribute_id": "...",
@@ -247,6 +252,7 @@ Return valid JSON with this exact structure:
                 "key_elements": [],
                 "priority": "medium",
                 "style_prompt": "",
+                "visible_text_snippets": [],
                 "claims": [],
             }
             for i in range(n)
