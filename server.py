@@ -1,18 +1,20 @@
 import os
 import uuid
 import asyncio
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from zipfile import ZipFile
 
 from config import UPLOAD_DIR, OUTPUT_DIR
 from scraper import scrape_product_url
 from gemini_service import (
     analyze_competitor_catalog,
-    detect_information_gaps,
-    generate_smart_questions,
+    generate_hero_image,
+    generate_catalog_image,
 )
 
 BASE_DIR = Path(__file__).parent
@@ -76,6 +78,123 @@ async def save_upload_files(
 
         paths.append(f"/uploads/{session_id}/{subfolder}/{filename}")
     return paths
+
+
+# ── Analysis/Q&A Helpers ──
+
+COMPETITOR_IMAGE_CAP = 12
+
+
+def _normalize_text(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def extract_user_value_map(product_description: str) -> dict[str, str]:
+    """
+    Lightweight extraction of user-provided attributes from free text.
+    If we can't confidently extract, we return nothing and let defaults handle it.
+    """
+    desc = _normalize_text(product_description)
+    values: dict[str, str] = {}
+
+    # Flush system / method
+    if "siphonic" in desc:
+        values["flush_system_type"] = "siphonic flush"
+    elif "jet" in desc:
+        values["flush_system_type"] = "jet flush"
+    elif "washdown" in desc:
+        values["flush_system_type"] = "washdown"
+
+    # Trap / outlet type
+    if "s-trap" in desc or "s trap" in desc:
+        values["trap_outlet_type"] = "S trap"
+        values["s_trap_or_p_trap"] = "S trap"
+    elif "p-trap" in desc or "p trap" in desc:
+        values["trap_outlet_type"] = "P trap"
+        values["s_trap_or_p_trap"] = "P trap"
+
+    # Rough-in inches (e.g., "9 inch rough-in")
+    if "rough" in desc and "inch" in desc:
+        import re
+
+        m = re.search(r"(\\d{1,2})\\s*(?:inch|in)\\b", desc)
+        if m:
+            values["rough_in_inches"] = f"{m.group(1)} inch"
+
+    # Material / finish
+    for token in ["ceramic", "porcelain", "vitreous", "stainless", "chrome", "polished"]:
+        if token in desc:
+            values["material_finish"] = token
+            break
+
+    # Rim type
+    if "rimless" in desc:
+        values["rim_type"] = "rimless"
+    elif "rim" in desc:
+        values["rim_type"] = "rimmed"
+
+    # Bumper design
+    if "bumper" in desc:
+        values["bumper_design"] = "bumper"
+
+    # Dimensions presence (we only use this for skip heuristics)
+    if any(w in desc for w in ["dimension", "dimensions", "mm", "inch", "cm", "length", "width", "height", "size"]):
+        values["dimensions"] = "dimensions provided"
+
+    return values
+
+
+def build_attribute_defaults_from_analysis(analysis: dict) -> dict[str, dict]:
+    """
+    Build attribute defaults from Gemini-extracted claims across all competitor images
+    and across any suggested additions' required claims.
+    """
+    best: dict[str, dict] = {}
+
+    def consider_claim(claim: dict):
+        attr = (claim.get("attribute_id") or "").strip()
+        if not attr:
+            return
+        conf = float(claim.get("confidence", 0) or 0)
+        value = (claim.get("value") or "").strip()
+        if not value:
+            return
+        if attr not in best or conf > float(best[attr].get("confidence", 0) or 0):
+            best[attr] = {
+                "value": value,
+                "confidence": conf,
+                "label": (claim.get("label") or attr).strip(),
+            }
+
+    for img in (analysis.get("images", []) or []):
+        for claim in (img.get("claims", []) or []):
+            consider_claim(claim)
+
+    for add in (analysis.get("suggested_additions", []) or []):
+        for claim in (add.get("required_claims", []) or []):
+            consider_claim(claim)
+
+    return best
+
+
+def should_skip_question_for_claim(
+    attribute_id: str,
+    claim_value: str,
+    product_description: str,
+    user_values: dict[str, str],
+) -> bool:
+    """
+    Skip asking if we can reasonably infer the user already provided this attribute.
+    """
+    desc = _normalize_text(product_description)
+    if attribute_id in user_values:
+        return True
+    if claim_value and _normalize_text(claim_value) in desc:
+        return True
+    # Rough-in skip heuristic
+    if "rough_in" in attribute_id and "rough" in desc and "inch" in desc:
+        return True
+    return False
 
 
 # ── Routes ──
@@ -190,7 +309,7 @@ async def upload_product(
 
 @app.post("/api/analyze")
 async def analyze(payload: dict):
-    """Run competitor analysis pipeline: analyze → detect gaps → generate questions."""
+    """Run competitor analysis pipeline: analyze → extract claims → build targeted questions."""
     session_id = payload.get("session_id", "")
     if session_id not in sessions:
         return {"success": False, "error": "Invalid session"}
@@ -208,26 +327,123 @@ async def analyze(payload: dict):
         features = competitor.get("features", [])
         full_description = description + "\n" + "\n".join(features)
 
+        # Cost control: cap competitor images sent to Gemini
+        competitor_images = competitor.get("images", [])[:COMPETITOR_IMAGE_CAP]
+        session["competitor"]["images"] = competitor_images
+
         analysis, cost1 = await asyncio.to_thread(
             analyze_competitor_catalog,
-            competitor["images"],
+            competitor_images,
             full_description,
         )
 
-        # Step 2: Detect information gaps (rule-based, fast)
-        gaps = detect_information_gaps(competitor, product, analysis)
+        # Build a single attribute defaults map (for generation when user skips)
+        user_values = extract_user_value_map(product.get("description", ""))
+        attribute_defaults = build_attribute_defaults_from_analysis(analysis)
 
-        # Step 3: Generate smart questions from gaps
-        questions, cost2 = await asyncio.to_thread(
-            generate_smart_questions,
-            gaps,
-            analysis,
-        )
+        compiled_attributes: dict[str, str] = {
+            k: v.get("value", "") for k, v in attribute_defaults.items()
+        }
+        for attr_id, val in user_values.items():
+            compiled_attributes[attr_id] = val
+
+        # Build questions directly from Gemini "claims"
+        questions: list[dict] = []
+        product_description = product.get("description", "")
+
+        for img in analysis.get("images", []) or []:
+            img_index = int(img.get("index", 0))
+            for claim in img.get("claims", []) or []:
+                attribute_id = (claim.get("attribute_id") or "").strip()
+                if not attribute_id:
+                    continue
+
+                if should_skip_question_for_claim(
+                    attribute_id=attribute_id,
+                    claim_value=claim.get("value") or "",
+                    product_description=product_description,
+                    user_values=user_values,
+                ):
+                    continue
+
+                answer_type = claim.get("answer_type") or "text"
+                question_type = "text"
+                options = None
+                if answer_type == "choice":
+                    question_type = "choice"
+                    options = claim.get("options") or None
+                elif answer_type == "image":
+                    question_type = "image"
+
+                label = (claim.get("label") or attribute_id).strip()
+                value = (claim.get("value") or "").strip()
+                confidence = float(claim.get("confidence", 0) or 0)
+                evidence_text = (claim.get("evidence_text") or "").strip()
+
+                questions.append({
+                    "id": f"{attribute_id}_img{img_index}",
+                    "attribute_id": attribute_id,
+                    "group": {"kind": "competitor_image", "image_index": img_index},
+                    "text": f"From the competitor image, it looks like `{label}` is `{value}`. Is this true for your product?",
+                    "type": question_type,
+                    "options": options,
+                    "default_value": value,
+                    "context": evidence_text,
+                    "confidence": confidence,
+                    "source_value": value,
+                })
+
+        # Suggested additions: ask for their required claims too (skip only if we can infer from user text)
+        for add in analysis.get("suggested_additions", []) or []:
+            addition_id = (add.get("id") or "").strip()
+            if not addition_id:
+                continue
+            for claim in add.get("required_claims", []) or []:
+                attribute_id = (claim.get("attribute_id") or "").strip()
+                if not attribute_id:
+                    continue
+
+                if should_skip_question_for_claim(
+                    attribute_id=attribute_id,
+                    claim_value=claim.get("value") or "",
+                    product_description=product_description,
+                    user_values=user_values,
+                ):
+                    continue
+
+                answer_type = claim.get("answer_type") or "text"
+                question_type = "text"
+                options = None
+                if answer_type == "choice":
+                    question_type = "choice"
+                    options = claim.get("options") or None
+                elif answer_type == "image":
+                    question_type = "image"
+
+                label = (claim.get("label") or attribute_id).strip()
+                value = (claim.get("value") or "").strip()
+                confidence = float(claim.get("confidence", 0) or 0)
+                evidence_text = (claim.get("evidence_text") or "").strip()
+
+                questions.append({
+                    "id": f"{addition_id}_{attribute_id}",
+                    "attribute_id": attribute_id,
+                    "group": {"kind": "suggested_addition", "addition_id": addition_id},
+                    "text": f"For the suggested catalog addition, it appears your product should have `{label}` = `{value}`. Confirm?",
+                    "type": question_type,
+                    "options": options,
+                    "default_value": value,
+                    "context": evidence_text,
+                    "confidence": confidence,
+                    "source_value": value,
+                })
 
         # Store in session
         session["analysis"] = analysis
         session["questions"] = questions
-        session["costs"].extend([cost1, cost2])
+        session["compiled_attributes"] = compiled_attributes
+        session["selected_additions"] = []
+        session["costs"].extend([cost1])
 
         total_cost_inr = sum(c.get("cost_inr", 0) for c in session["costs"])
 
@@ -235,7 +451,7 @@ async def analyze(payload: dict):
             "success": True,
             "analysis": analysis,
             "questions": questions,
-            "costs": [cost1, cost2],
+            "costs": [cost1],
             "total_cost_inr": round(total_cost_inr, 4),
         }
     except Exception as e:
@@ -244,14 +460,33 @@ async def analyze(payload: dict):
 
 
 @app.post("/api/answers")
-async def submit_answers(payload: dict):
-    """Save user's answers to smart questions, merging defaults for skipped ones."""
-    session_id = payload.get("session_id", "")
+async def submit_answers(
+    session_id: str = Form(...),
+    answers_json: str = Form("{}"),
+    selected_additions_json: str = Form("[]"),
+    image_qids_json: str = Form("[]"),
+    image_files: list[UploadFile] = File([]),
+):
+    """Save user's answers to smart questions (multipart), merging defaults for skipped ones."""
     if session_id not in sessions:
         return {"success": False, "error": "Invalid session"}
 
     session = sessions[session_id]
-    answers = payload.get("answers", {})
+
+    try:
+        answers = json.loads(answers_json) if answers_json else {}
+    except Exception:
+        answers = {}
+
+    try:
+        selected_addition_ids = json.loads(selected_additions_json) if selected_additions_json else []
+    except Exception:
+        selected_addition_ids = []
+
+    try:
+        image_qids = json.loads(image_qids_json) if image_qids_json else []
+    except Exception:
+        image_qids = []
 
     # Merge defaults for skipped/empty answers
     if session["questions"]:
@@ -259,10 +494,350 @@ async def submit_answers(payload: dict):
             if q["id"] not in answers or not answers[q["id"]]:
                 answers[q["id"]] = q.get("default_value", "")
 
+    # Save uploaded answer images and map them to qids.
+    # Frontend sends files in the same order as `image_qids_json`.
+    saved_image_urls: dict[str, str] = {}
+    for i, file in enumerate(image_files or []):
+        qid = str(image_qids[i]) if i < len(image_qids) else f"image_qid_{i}"
+        ext = Path(file.filename).suffix or ".jpg"
+        dir_path = Path(UPLOAD_DIR) / session_id / "answers"
+        dir_path.mkdir(parents=True, exist_ok=True)
+        filename = f"{qid}{ext}"
+        file_path = dir_path / filename
+
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        saved_image_urls[qid] = f"/uploads/{session_id}/answers/{filename}"
+
+    # If an answer image was uploaded for a question, store the URL in answers.
+    for qid, url in saved_image_urls.items():
+        answers[qid] = url
+
     session["answers"] = answers
-    return {"success": True, "answers": answers}
+    session["selected_additions"] = selected_addition_ids
+
+    # Update compiled_attributes using answers where relevant.
+    if "compiled_attributes" not in session:
+        session["compiled_attributes"] = {}
+    for q in (session.get("questions") or []):
+        qid = q.get("id")
+        attr_id = q.get("attribute_id")
+        if qid and attr_id and qid in answers and answers.get(qid):
+            session["compiled_attributes"][attr_id] = answers[qid]
+
+    return {"success": True, "answers": answers, "selected_additions": selected_addition_ids}
+
+
+# ── Phase 4/5: Hero + Catalog Generation ──
+
+@app.post("/api/generate-hero")
+async def api_generate_hero(
+    session_id: str = Form(...),
+    regenerate: bool = Form(False),
+    hero_override: UploadFile = File(None),
+):
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    session = sessions[session_id]
+
+    try:
+        # If user uploaded a hero image, accept it directly (no Gemini call).
+        if hero_override is not None and getattr(hero_override, "filename", None):
+            hero_dir = Path(OUTPUT_DIR) / session_id / "hero"
+            hero_dir.mkdir(parents=True, exist_ok=True)
+            out_path = hero_dir / "hero.png"
+
+            content = await hero_override.read()
+            with open(out_path, "wb") as f:
+                f.write(content)
+
+            hero_url = f"/outputs/{session_id}/hero/hero.png"
+            session["hero_image"] = hero_url
+            return {"success": True, "hero_image_url": hero_url, "mode": "user_override", "costs": []}
+
+        product = session.get("product") or {}
+        product_description = product.get("description", "")
+        product_images = product.get("images", []) or []
+        compiled_attributes = session.get("compiled_attributes", {}) or {}
+
+        timeout_s = 90
+        if not regenerate and session.get("hero_image"):
+            return {"success": True, "hero_image_url": session["hero_image"], "mode": "cached", "costs": []}
+
+        hero_url, cost = await asyncio.wait_for(
+            asyncio.to_thread(
+                generate_hero_image,
+                session_id,
+                product_images,
+                product_description,
+                compiled_attributes,
+            ),
+            timeout=timeout_s,
+        )
+
+        session["hero_image"] = hero_url
+        session["costs"].append(cost)
+        total_cost_inr = sum(c.get("cost_inr", 0) for c in session["costs"])
+        return {"success": True, "hero_image_url": hero_url, "mode": "generated", "costs": [cost], "total_cost_inr": total_cost_inr}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "HERO_TIMEOUT", "message": "Hero generation timed out. Please retry or upload your own hero image."}
+    except Exception as e:
+        return {"success": False, "error": f"HERO_FAILED:{type(e).__name__}", "message": str(e)}
+
+
+@app.get("/api/generate-catalog/stream")
+async def api_generate_catalog_stream(session_id: str):
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    session = sessions[session_id]
+    analysis = session.get("analysis") or {}
+    competitor_images = session.get("competitor", {}).get("images", []) or []
+    hero_image_url = session.get("hero_image")
+    compiled_attributes = session.get("compiled_attributes", {}) or {}
+    selected_addition_ids = session.get("selected_additions", []) or []
+
+    if not hero_image_url:
+        async def gen_err():
+            yield "event: error\ndata: " + json.dumps({"error": "HERO_NOT_GENERATED"}) + "\n\n"
+
+        return StreamingResponse(gen_err(), media_type="text/event-stream")
+
+    analysis_images = analysis.get("images", []) or []
+    by_index = {int(img.get("index", 0)): img for img in analysis_images}
+    recommended_order = analysis.get("recommended_order") or [img.get("index", 0) for img in analysis_images]
+
+    jobs: list[dict] = []
+    for idx in recommended_order:
+        if int(idx) not in by_index:
+            continue
+        img = by_index[int(idx)]
+        competitor_url = competitor_images[int(idx)] if int(idx) < len(competitor_images) else None
+        jobs.append({
+            "key": f"competitor_{int(idx)}",
+            "type": "competitor",
+            "reference_intent_image_url": competitor_url,
+            "style_prompt": img.get("style_prompt") or "",
+            "prompt_fragment": f"Intent: {img.get('intent') or ''}\nKey elements: {', '.join([str(x) for x in (img.get('key_elements') or [])])}",
+            "image_key": f"competitor_{int(idx)}",
+            "image_index": int(idx),
+        })
+
+    additions = analysis.get("suggested_additions", []) or []
+    additions_by_id = {a.get("id"): a for a in additions if a.get("id")}
+    for aid in selected_addition_ids:
+        add = additions_by_id.get(aid)
+        if not add:
+            continue
+        jobs.append({
+            "key": f"addition_{aid}",
+            "type": "addition",
+            "reference_intent_image_url": None,
+            "style_prompt": "Consistent studio product photography styling (match the HERO look).",
+            "prompt_fragment": add.get("generation_prompt_fragment") or add.get("title") or aid,
+            "image_key": f"addition_{aid}",
+            "addition_id": aid,
+        })
+
+    # For prompt_fragment we may have non-string types; normalize
+    for job in jobs:
+        frag = job.get("prompt_fragment")
+        if isinstance(frag, list):
+            job["prompt_fragment"] = " ".join([str(x) for x in frag if x])
+
+    total = len(jobs)
+
+    async def sse_generator():
+        sem = asyncio.Semaphore(2)  # cost/rate limiting
+        queue: asyncio.Queue = asyncio.Queue()
+        completed = 0
+        questions = session.get("questions") or []
+        answers = session.get("answers") or {}
+
+        # Emit start event
+        yield "event: catalog_start\ndata: " + json.dumps({"total": total}) + "\n\n"
+
+        async def run_job(job: dict):
+            nonlocal completed
+            async with sem:
+                try:
+                    timeout_s = 180
+                    job_compiled_attributes = dict(compiled_attributes or {})
+                    if job.get("type") == "competitor":
+                        job_idx = job.get("image_index")
+                        for q in questions:
+                            if (
+                                q.get("group", {}).get("kind") == "competitor_image"
+                                and q.get("group", {}).get("image_index") == job_idx
+                            ):
+                                qid = q.get("id")
+                                attr_id = q.get("attribute_id")
+                                if qid and attr_id and answers.get(qid):
+                                    job_compiled_attributes[attr_id] = answers[qid]
+                    elif job.get("type") == "addition":
+                        job_aid = job.get("addition_id")
+                        for q in questions:
+                            if (
+                                q.get("group", {}).get("kind") == "suggested_addition"
+                                and q.get("group", {}).get("addition_id") == job_aid
+                            ):
+                                qid = q.get("id")
+                                attr_id = q.get("attribute_id")
+                                if qid and attr_id and answers.get(qid):
+                                    job_compiled_attributes[attr_id] = answers[qid]
+
+                    image_url, cost = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            generate_catalog_image,
+                            session_id,
+                            job["image_key"],
+                            hero_image_url,
+                            job.get("reference_intent_image_url"),
+                            job.get("style_prompt") or "",
+                            job.get("prompt_fragment") or "",
+                            job_compiled_attributes,
+                        ),
+                        timeout=timeout_s,
+                    )
+                    queue.put_nowait({
+                        "status": "success",
+                        "key": job["key"],
+                        "image_url": image_url,
+                        "cost": cost,
+                    })
+                except asyncio.TimeoutError:
+                    queue.put_nowait({
+                        "status": "timeout",
+                        "key": job["key"],
+                        "image_url": None,
+                    })
+                except Exception as e:
+                    queue.put_nowait({
+                        "status": "failed",
+                        "key": job["key"],
+                        "image_url": None,
+                        "error": str(e),
+                    })
+
+        tasks = [asyncio.create_task(run_job(job)) for job in jobs]
+
+        while completed < total:
+            event = await queue.get()
+            completed += 1
+
+            # Update session state as we go (for download/regenerate later)
+            if event.get("status") == "success":
+                session.setdefault("catalog_images", []).append({
+                    "key": event["key"],
+                    "url": event["image_url"],
+                })
+                session["costs"].append(event.get("cost") or {})
+
+            yield "event: catalog_image\ndata: " + json.dumps(event) + "\n\n"
+
+        # Ensure background tasks end
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+        yield "event: catalog_done\ndata: " + json.dumps({"total": total}) + "\n\n"
+
+    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/regenerate")
+async def api_regenerate_catalog(
+    session_id: str = Form(...),
+    image_key: str = Form(...),
+    feedback: str = Form(""),
+):
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    session = sessions[session_id]
+    analysis = session.get("analysis") or {}
+    competitor_images = session.get("competitor", {}).get("images", []) or []
+    hero_image_url = session.get("hero_image")
+    compiled_attributes = session.get("compiled_attributes", {}) or {}
+
+    if not hero_image_url:
+        return {"success": False, "error": "HERO_NOT_GENERATED"}
+
+    analysis_images = analysis.get("images", []) or []
+    by_index = {int(img.get("index", 0)): img for img in analysis_images}
+
+    reference_intent_image_url = None
+    style_prompt = ""
+    prompt_fragment = ""
+
+    if image_key.startswith("competitor_"):
+        idx = int(image_key.replace("competitor_", ""))
+        img = by_index.get(idx)
+        if not img:
+            return {"success": False, "error": "IMAGE_NOT_FOUND"}
+        reference_intent_image_url = competitor_images[idx] if idx < len(competitor_images) else None
+        style_prompt = img.get("style_prompt") or ""
+        prompt_fragment = img.get("intent") or ""
+    elif image_key.startswith("addition_"):
+        aid = image_key.replace("addition_", "")
+        additions = analysis.get("suggested_additions", []) or []
+        add = next((a for a in additions if a.get("id") == aid), None)
+        if not add:
+            return {"success": False, "error": "IMAGE_NOT_FOUND"}
+        reference_intent_image_url = None
+        style_prompt = "Consistent studio product photography styling (match the HERO look)."
+        prompt_fragment = add.get("generation_prompt_fragment") or ""
+    else:
+        return {"success": False, "error": "INVALID_IMAGE_KEY"}
+
+    # Append any regeneration feedback (if provided by future UI)
+    if feedback and isinstance(feedback, str):
+        prompt_fragment = (prompt_fragment or "") + f"\nUser feedback: {feedback}"
+
+    try:
+        image_url, cost = await asyncio.to_thread(
+            generate_catalog_image,
+            session_id,
+            image_key,
+            hero_image_url,
+            reference_intent_image_url,
+            style_prompt,
+            prompt_fragment,
+            compiled_attributes,
+        )
+        session.setdefault("catalog_images", []).append({"key": image_key, "url": image_url})
+        session["costs"].append(cost)
+        return {"success": True, "image_url": image_url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/download/{session_id}")
+async def api_download_catalog(session_id: str):
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    catalog_dir = Path(OUTPUT_DIR) / session_id / "catalog"
+    if not catalog_dir.exists():
+        return {"success": False, "error": "No generated catalog found"}
+
+    zip_path = Path(OUTPUT_DIR) / session_id / "catalog.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+
+    with ZipFile(zip_path, "w") as zf:
+        for p in catalog_dir.rglob("*"):
+            if p.is_file():
+                arc = p.relative_to(Path(OUTPUT_DIR) / session_id)
+                zf.write(p, arcname=str(arc))
+
+    return FileResponse(zip_path, media_type="application/zip", filename="catalog.zip")
 
 
 # Mount static directories (after all route definitions)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")

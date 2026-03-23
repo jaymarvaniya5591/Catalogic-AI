@@ -19,9 +19,12 @@ const state = {
     analysis: null,
     questions: [],
     answers: {},
+    selectedSuggestedAdditionIds: [],
 
     // Step 4
     heroImageUrl: null,
+    heroAccepted: false,
+    catalogEventSource: null,
 
     // Step 5
     catalogImages: [],
@@ -45,6 +48,16 @@ function goToStep(n) {
     state.currentStep = n;
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Robustness: if the user jumps between steps, auto-trigger generation if needed.
+    if (n === 4 && state.sessionId && !state.heroImageUrl) {
+        generateHeroImage({ regenerate: false });
+    }
+    if (n === 5 && state.sessionId && state.heroAccepted) {
+        if (!state.catalogImages || state.catalogImages.length === 0) {
+            startCatalogGeneration();
+        }
+    }
 }
 
 function updateStepProgress(activeStep) {
@@ -222,14 +235,59 @@ function initNavigation() {
         const ok = await submitAnswers();
         if (!ok) return;
         goToStep(4);
+        // Start hero generation right after analysis/answers are saved.
+        generateHeroImage({ regenerate: false });
     });
 
     // Step 4
     document.getElementById('btn-step4-back').addEventListener('click', () => goToStep(3));
-    document.getElementById('btn-step4-next').addEventListener('click', () => goToStep(5));
+    document.getElementById('btn-step4-next').addEventListener('click', () => {
+        goToStep(5);
+        startCatalogGeneration();
+    });
 
     // Step 5
-    document.getElementById('btn-step5-back').addEventListener('click', () => goToStep(4));
+    document.getElementById('btn-step5-back').addEventListener('click', () => {
+        if (state.catalogEventSource) {
+            try { state.catalogEventSource.close(); } catch (_) {}
+            state.catalogEventSource = null;
+        }
+        goToStep(4);
+    });
+
+    // Hero actions
+    document.getElementById('btn-accept-hero').addEventListener('click', () => {
+        state.heroAccepted = true;
+        const btn = document.getElementById('btn-step4-next');
+        if (btn) btn.disabled = false;
+        showStatus(4, 'Hero image accepted. Generating your catalog...', 'success');
+    });
+
+    document.getElementById('btn-regenerate-hero').addEventListener('click', () => {
+        state.heroAccepted = false;
+        const btn = document.getElementById('btn-step4-next');
+        if (btn) btn.disabled = true;
+        generateHeroImage({ regenerate: true });
+    });
+
+    const heroUpload = document.getElementById('hero-upload');
+    if (heroUpload) {
+        heroUpload.addEventListener('change', async () => {
+            const file = heroUpload.files && heroUpload.files[0];
+            if (!file) return;
+            state.heroAccepted = false;
+            const btn = document.getElementById('btn-step4-next');
+            if (btn) btn.disabled = true;
+            await generateHeroImage({ overrideFile: file });
+        });
+    }
+
+    const btnDownload = document.getElementById('btn-download');
+    if (btnDownload) {
+        btnDownload.addEventListener('click', async () => {
+            await downloadCatalog();
+        });
+    }
 }
 
 // ── Step Progress Clicks ──
@@ -416,6 +474,7 @@ async function runAnalysis() {
     // Skip re-run if analysis already exists (user navigated back/forward)
     if (state.analysis) {
         renderAnalysisResults(state.analysis);
+        renderSuggestedAdditions(state.analysis);
         renderQuestions(state.questions);
         validateStep3();
         return;
@@ -427,6 +486,8 @@ async function runAnalysis() {
         '<div class="placeholder-message"><div class="spinner"></div><p>Analyzing competitor images...</p></div>';
     document.getElementById('questions-list').innerHTML =
         '<div class="placeholder-message">Questions will appear after analysis...</div>';
+    const addWrapper = document.getElementById('suggested-additions-wrapper');
+    if (addWrapper) addWrapper.innerHTML = '';
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);
@@ -444,7 +505,9 @@ async function runAnalysis() {
         if (data.success) {
             state.analysis = data.analysis;
             state.questions = data.questions || [];
+            state.selectedSuggestedAdditionIds = [];
             renderAnalysisResults(data.analysis);
+            renderSuggestedAdditions(data.analysis);
             renderQuestions(data.questions || []);
             if (data.costs) updateCostDisplay(data.costs, data.total_cost_inr);
             showStatus(3, 'Analysis complete. Answer the questions below or skip for smart defaults.', 'success');
@@ -498,53 +561,166 @@ function renderAnalysisResults(analysis) {
     });
 }
 
+// ── Suggested Additions Selection (Step 3) ──
+function renderSuggestedAdditions(analysis) {
+    const wrapper = document.getElementById('suggested-additions-wrapper');
+    if (!wrapper) return;
+
+    const additions = analysis?.suggested_additions || [];
+    wrapper.innerHTML = '';
+
+    if (!additions.length) {
+        wrapper.style.display = 'none';
+        return;
+    }
+    wrapper.style.display = 'block';
+
+    wrapper.innerHTML = `
+        <div class="catalog-strategy">Suggested additions (choose up to 2 to generate)</div>
+    `;
+
+    const selectedSet = new Set(state.selectedSuggestedAdditionIds || []);
+    const list = document.createElement('div');
+    list.style.display = 'grid';
+    list.style.gridTemplateColumns = '1fr 1fr';
+    list.style.gap = '12px';
+    list.style.marginTop = '12px';
+
+    additions.forEach(add => {
+        const id = add.id;
+        const checked = selectedSet.has(id);
+        const disabled = !checked && state.selectedSuggestedAdditionIds.length >= 2;
+
+        const label = document.createElement('label');
+        label.className = 'choice-option';
+        label.style.cursor = 'pointer';
+        label.style.opacity = disabled ? 0.6 : 1;
+
+        label.innerHTML = `
+            <input type="checkbox"
+                   id="add_${id}"
+                   class="question-answer"
+                   data-addition-id="${id}"
+                   ${checked ? 'checked' : ''}
+                   ${disabled ? 'disabled' : ''} />
+            <span>
+                <strong style="display:block; color: var(--text-primary); margin-bottom:4px;">${add.title || id}</strong>
+                <span style="color: var(--text-secondary); font-size:12px;">${add.category || ''}</span>
+            </span>
+        `;
+
+        const checkbox = label.querySelector('input[type="checkbox"]');
+        checkbox.addEventListener('change', () => {
+            if (checkbox.checked) {
+                if (state.selectedSuggestedAdditionIds.length >= 2 && !state.selectedSuggestedAdditionIds.includes(id)) {
+                    checkbox.checked = false;
+                    showStatus(3, 'You can select up to 2 suggested additions.', 'error');
+                    return;
+                }
+                if (!state.selectedSuggestedAdditionIds.includes(id)) {
+                    state.selectedSuggestedAdditionIds.push(id);
+                }
+            } else {
+                state.selectedSuggestedAdditionIds = state.selectedSuggestedAdditionIds.filter(x => x !== id);
+            }
+
+            // Re-render questions with updated selection
+            renderSuggestedAdditions(analysis);
+            renderQuestions(state.questions);
+        });
+
+        list.appendChild(label);
+    });
+
+    wrapper.appendChild(list);
+}
+
 // ── Render Smart Questions ──
 function renderQuestions(questions) {
     const list = document.getElementById('questions-list');
     list.innerHTML = '';
 
-    if (!questions.length) {
+    if (!questions || !questions.length) {
         list.innerHTML = '<div class="placeholder-message">No additional questions needed.</div>';
         return;
     }
 
+    const selectedSet = new Set(state.selectedSuggestedAdditionIds || []);
+
+    // Group questions
+    const competitorGroups = new Map(); // image_index -> questions[]
+    const suggestedGroups = new Map(); // addition_id -> questions[]
+
     questions.forEach(q => {
+        if (!q?.group) return;
+        if (q.group.kind === 'competitor_image') {
+            const idx = q.group.image_index;
+            if (!competitorGroups.has(idx)) competitorGroups.set(idx, []);
+            competitorGroups.get(idx).push(q);
+        } else if (q.group.kind === 'suggested_addition') {
+            const aid = q.group.addition_id;
+            if (!suggestedGroups.has(aid)) suggestedGroups.set(aid, []);
+            suggestedGroups.get(aid).push(q);
+        }
+    });
+
+    const makeQuestionCard = (q, disabledForSelection) => {
         const card = document.createElement('div');
-        card.className = 'question-card';
+        card.className = 'question-card' + (disabledForSelection ? ' skipped' : '');
         card.dataset.questionId = q.id;
+
+        const defaultValue = q.default_value || 'Standard premium quality';
+        const disabledAttr = disabledForSelection ? 'disabled' : '';
+        const skipBtnDisabled = disabledForSelection ? 'disabled' : '';
 
         let inputHTML = '';
         if (q.type === 'choice' && q.options) {
             const optionsHTML = q.options.map(opt =>
                 `<label class="choice-option">
-                    <input type="radio" name="q_${q.id}" value="${opt}" class="question-answer" data-qid="${q.id}" />
+                    <input type="radio" name="q_${q.id}" value="${opt}"
+                           class="question-answer" data-qid="${q.id}" ${disabledAttr} />
                     <span>${opt}</span>
                 </label>`
             ).join('');
+
             inputHTML = `
                 <div class="question-choices">${optionsHTML}</div>
-                <button class="btn btn-skip" onclick="skipQuestion('${q.id}', this)">Skip</button>
+                <button class="btn btn-skip" ${skipBtnDisabled}
+                        onclick="skipQuestion('${q.id}', this)">
+                    ${disabledForSelection ? 'Skipped' : 'Skip'}
+                </button>
             `;
         } else if (q.type === 'image') {
             inputHTML = `
                 <div class="question-input">
-                    <label class="btn btn-secondary btn-small" style="cursor:pointer;">
+                    <label class="btn btn-secondary btn-small"
+                           style="cursor:${disabledForSelection ? 'not-allowed' : 'pointer'}; opacity:${disabledForSelection ? 0.6 : 1};">
                         Upload Image
-                        <input type="file" accept="image/*" class="question-answer"
-                               data-qid="${q.id}" hidden onchange="handleQuestionImage(this, '${q.id}')" />
+                        <input type="file" accept="image/*"
+                               class="question-answer"
+                               data-qid="${q.id}"
+                               ${disabledAttr}
+                               hidden
+                               onchange="handleQuestionImage(this, '${q.id}')" />
                     </label>
                     <span class="question-image-name" id="qimg-${q.id}"></span>
-                    <button class="btn btn-skip" onclick="skipQuestion('${q.id}', this)">Skip</button>
+                    <button class="btn btn-skip" ${skipBtnDisabled}
+                            onclick="skipQuestion('${q.id}', this)">
+                        ${disabledForSelection ? 'Skipped' : 'Skip'}
+                    </button>
                 </div>
             `;
         } else {
-            // Default: text input
             inputHTML = `
                 <div class="question-input">
                     <input type="text" class="text-input question-answer"
                            data-qid="${q.id}"
-                           placeholder="${q.default_value || 'Type your answer...'}" />
-                    <button class="btn btn-skip" onclick="skipQuestion('${q.id}', this)">Skip</button>
+                           placeholder="${defaultValue}"
+                           ${disabledAttr} />
+                    <button class="btn btn-skip" ${skipBtnDisabled}
+                            onclick="skipQuestion('${q.id}', this)">
+                        ${disabledForSelection ? 'Skipped' : 'Skip'}
+                    </button>
                 </div>
             `;
         }
@@ -553,11 +729,57 @@ function renderQuestions(questions) {
             <p class="question-text">${q.text}</p>
             ${q.context ? `<p class="question-context">${q.context}</p>` : ''}
             ${inputHTML}
-            <p class="question-default" id="default-${q.id}" style="display:none;">
-                Using default: <em>${q.default_value || 'Standard premium quality'}</em>
+            <p class="question-default" id="default-${q.id}" style="display:${disabledForSelection ? 'block' : 'none'};">
+                Using default: <em>${defaultValue}</em>
             </p>
         `;
-        list.appendChild(card);
+
+        return card;
+    };
+
+    // 1) Competitor image groups
+    const competitorIndices = Array.from(competitorGroups.keys()).sort((a, b) => a - b);
+    competitorIndices.forEach(idx => {
+        const header = document.createElement('div');
+        header.className = 'analysis-card';
+        header.style.padding = '16px';
+        header.style.marginTop = '16px';
+        const imgUrl = state.competitorImages[idx] || '';
+        header.innerHTML = `
+            <div style="display:flex; gap:16px; align-items:center;">
+                <div style="width:140px; flex:0 0 auto;" class="analysis-image">
+                    <img src="${imgUrl}" alt="Competitor image ${idx + 1}" style="width:100%; height:100%; object-fit:cover;" />
+                </div>
+                <div>
+                    <h4 class="section-subtitle" style="margin-top:0;">Competitor Image ${parseInt(idx) + 1}</h4>
+                    <p class="section-hint" style="margin-top:6px;">Confirm the technical/spec info shown in this image.</p>
+                </div>
+            </div>
+        `;
+        list.appendChild(header);
+
+        (competitorGroups.get(idx) || []).forEach(q => list.appendChild(makeQuestionCard(q, false)));
+    });
+
+    // 2) Suggested additions (questions disabled unless selected)
+    const additions = state.analysis?.suggested_additions || [];
+    additions.forEach(add => {
+        const aid = add.id;
+        const qs = suggestedGroups.get(aid) || [];
+        if (!qs.length) return;
+
+        const selected = selectedSet.has(aid);
+        const group = document.createElement('div');
+        group.className = 'analysis-card';
+        group.style.padding = '16px';
+        group.style.marginTop = '16px';
+        group.innerHTML = `
+            <h4 class="section-subtitle" style="margin-top:0;">Suggested Addition: ${add.title || aid}</h4>
+            <p class="section-hint">${selected ? 'This will be generated.' : 'Not selected. Defaults will be used.'}</p>
+        `;
+        list.appendChild(group);
+
+        qs.forEach(q => list.appendChild(makeQuestionCard(q, !selected)));
     });
 }
 
@@ -601,20 +823,25 @@ function collectAnswers() {
 
 async function submitAnswers() {
     const textAnswers = {};
+    const imageEntries = []; // { qid, file }
+
     for (const [k, v] of Object.entries(state.answers)) {
         if (v instanceof File) {
-            textAnswers[k] = `[image: ${v.name}]`;
+            imageEntries.push({ qid: k, file: v });
         } else {
             textAnswers[k] = v;
         }
     }
 
+    const formData = new FormData();
+    formData.append('session_id', state.sessionId);
+    formData.append('answers_json', JSON.stringify(textAnswers));
+    formData.append('selected_additions_json', JSON.stringify(state.selectedSuggestedAdditionIds || []));
+    formData.append('image_qids_json', JSON.stringify(imageEntries.map(e => e.qid)));
+    imageEntries.forEach(e => formData.append('image_files', e.file));
+
     try {
-        const res = await fetch('/api/answers', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: state.sessionId, answers: textAnswers }),
-        });
+        const res = await fetch('/api/answers', { method: 'POST', body: formData });
         const data = await res.json();
         return data.success;
     } catch (err) {
@@ -674,11 +901,208 @@ function toggleCostDetails() {
 }
 
 // ── API Stubs (Phase 4+) ──
-async function generateHeroImage() { /* POST /api/generate-hero */ }
-async function regenerateHero() { /* POST /api/generate-hero */ }
-function startCatalogGeneration() { /* GET /api/generate-catalog/stream via EventSource */ }
-async function regenerateCatalogImage(index) { /* POST /api/regenerate */ }
-async function downloadCatalog() { /* GET /api/download/{sessionId} */ }
+async function generateHeroImage({ regenerate = false, overrideFile = null } = {}) {
+    const step = 4;
+    const btnAccept = document.getElementById('btn-accept-hero');
+    const btnRegen = document.getElementById('btn-regenerate-hero');
+    const actions = document.getElementById('hero-actions');
+    const placeholder = document.getElementById('hero-placeholder');
+    const imgEl = document.getElementById('hero-image');
+    const step4NextBtn = document.getElementById('btn-step4-next');
+
+    state.heroAccepted = false;
+    if (step4NextBtn) step4NextBtn.disabled = true;
+
+    if (placeholder) placeholder.style.display = 'flex';
+    if (actions) actions.style.display = 'none';
+    if (imgEl) imgEl.style.display = 'none';
+
+    showStatus(step, regenerate ? 'Regenerating hero image...' : 'Generating your hero image...', '');
+
+    const formData = new FormData();
+    formData.append('session_id', state.sessionId);
+    formData.append('regenerate', regenerate ? 'true' : 'false');
+    if (overrideFile) {
+        formData.append('hero_override', overrideFile);
+    }
+
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+        const res = await fetch('/api/generate-hero', { method: 'POST', body: formData, signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        const data = await res.json();
+        if (!data.success) {
+            const msg = data.message || data.error || 'Hero generation failed.';
+            showStatus(step, msg, 'error');
+            return false;
+        }
+
+        state.heroImageUrl = data.hero_image_url;
+
+        if (imgEl) {
+            imgEl.src = state.heroImageUrl;
+            imgEl.style.display = 'block';
+        }
+        if (actions) actions.style.display = 'flex';
+        if (placeholder) placeholder.style.display = 'none';
+
+        showStatus(step, 'Hero image ready. Review and click Accept to continue.', 'success');
+        if (btnAccept) btnAccept.disabled = false;
+        if (btnRegen) btnRegen.disabled = false;
+
+        return true;
+    } catch (err) {
+        showStatus(step, 'Hero generation failed or timed out. Please retry or upload your own hero.', 'error');
+        return false;
+    }
+}
+
+async function regenerateHero() {
+    return generateHeroImage({ regenerate: true });
+}
+
+function startCatalogGeneration() {
+    const step = 5;
+    if (state.catalogEventSource) {
+        try { state.catalogEventSource.close(); } catch (_) {}
+        state.catalogEventSource = null;
+    }
+
+    const grid = document.getElementById('catalog-grid');
+    const placeholder = document.getElementById('catalog-placeholder');
+    const progressFill = document.getElementById('progress-fill');
+    const progressText = document.getElementById('progress-text');
+    const downloadSection = document.getElementById('download-section');
+
+    if (grid) grid.innerHTML = '';
+    if (progressFill) progressFill.style.width = '0%';
+    if (progressText) progressText.textContent = '0 / 0 images';
+    if (downloadSection) downloadSection.style.display = 'none';
+
+    // Immediate placeholder (before SSE start)
+    if (grid) {
+        const ph = document.createElement('div');
+        ph.className = 'placeholder-message';
+        ph.id = 'catalog-placeholder';
+        ph.textContent = 'Generating catalog images...';
+        grid.appendChild(ph);
+    }
+
+    showStatus(step, 'Catalog generation started...', '');
+
+    const esUrl = `/api/generate-catalog/stream?session_id=${encodeURIComponent(state.sessionId)}`;
+    const es = new EventSource(esUrl);
+    state.catalogEventSource = es;
+
+    state.catalogImages = [];
+    state.catalogCompleted = 0;
+    state.catalogTotal = 0;
+
+    const renderCard = (key, imageUrl, status, error) => {
+        const gridEl = document.getElementById('catalog-grid');
+        if (!gridEl) return;
+
+        // Remove placeholder once first image arrives
+        const ph = document.getElementById('catalog-placeholder');
+        if (ph) ph.remove();
+
+        const card = document.createElement('div');
+        card.className = 'catalog-card';
+
+        const content = status === 'success'
+            ? `<div class="catalog-image-wrapper">
+                    <img src="${imageUrl}" alt="${key}" class="catalog-image loaded" />
+               </div>`
+            : `<div class="catalog-image-wrapper" style="display:flex;align-items:center;justify-content:center;">
+                    <div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px;">
+                        Failed: ${status}${error ? '<br/>' + error.substring(0,80) : ''}
+                    </div>
+               </div>`;
+
+        card.innerHTML = content + `
+            <div class="catalog-card-footer">
+                <span style="color:var(--text-secondary);font-size:12px;">${key}</span>
+                <span style="color:var(--text-muted);font-size:12px;">${status}</span>
+            </div>
+        `;
+        gridEl.appendChild(card);
+    };
+
+    es.addEventListener('catalog_start', (e) => {
+        const data = JSON.parse(e.data || '{}');
+        state.catalogTotal = data.total || 0;
+        if (progressText) progressText.textContent = `0 / ${state.catalogTotal} images`;
+        showStatus(step, `Generating ${state.catalogTotal} images...`, '');
+    });
+
+    es.addEventListener('catalog_image', (e) => {
+        const data = JSON.parse(e.data || '{}');
+        state.catalogCompleted += 1;
+
+        const pct = state.catalogTotal > 0 ? Math.round((state.catalogCompleted / state.catalogTotal) * 100) : 0;
+        if (progressFill) progressFill.style.width = `${pct}%`;
+        if (progressText) progressText.textContent = `${state.catalogCompleted} / ${state.catalogTotal} images`;
+
+        if (data.status === 'success') {
+            renderCard(data.key, data.image_url, 'success');
+        } else {
+            renderCard(data.key, null, data.status || 'failed', data.error);
+        }
+    });
+
+    es.addEventListener('catalog_done', (e) => {
+        try { es.close(); } catch (_) {}
+        state.catalogEventSource = null;
+        if (downloadSection) downloadSection.style.display = 'block';
+        showStatus(step, 'Catalog generation complete.', 'success');
+    });
+
+    es.onerror = () => {
+        try { es.close(); } catch (_) {}
+        state.catalogEventSource = null;
+        showStatus(step, 'Catalog generation connection error.', 'error');
+    };
+}
+
+async function regenerateCatalogImage(index) {
+    // Not wired in UI yet; keep as a small helper for future work.
+    try {
+        const formData = new FormData();
+        formData.append('session_id', state.sessionId);
+        formData.append('image_key', index);
+        const res = await fetch('/api/regenerate', { method: 'POST', body: formData });
+        const data = await res.json();
+        return data.success ? data.image_url : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function downloadCatalog() {
+    try {
+        const res = await fetch(`/api/download/${encodeURIComponent(state.sessionId)}`);
+        if (!res.ok) {
+            showStatus(5, 'Download failed.', 'error');
+            return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'catalog.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (err) {
+        showStatus(5, 'Download failed.', 'error');
+    }
+}
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {

@@ -127,31 +127,88 @@ def analyze_competitor_catalog(images: list[str], description: str) -> tuple[dic
     n = len(images)
     client = get_client()
 
-    prompt = f"""You are a professional e-commerce catalog analyst for sanitaryware/bathroom products.
+    prompt = f"""You are a professional e-commerce catalog analyst for sanitaryware/bathroom products (toilets, WCs, flush systems).
 
 I'm showing you {n} catalog images from a competitor product listing, along with the product description.
 
 Product description:
 {description}
 
+Task A — Per-image catalog intent & style:
 For each image (numbered 0 through {n - 1}), identify:
 1. "type": The image category. Must be one of: "hero", "lifestyle", "closeup", "dimensions", "infographic", "comparison", "packaging", "installation", "features", "brand", "other"
 2. "intent": A short description (1-2 sentences) of what this image communicates to the buyer
 3. "key_elements": List of visual elements present (e.g. ["bathroom setting", "marble countertop", "warm lighting"])
 4. "priority": "high", "medium", or "low" — how important this image type is for a catalog
+5. "style_prompt": A short reusable prompt fragment (1-2 sentences) describing the visual style/messages for this image type (NOT the actual product specs).
 
-Also provide:
-- "catalog_strategy": A 2-sentence summary of the competitor's overall catalog approach
-- "recommended_order": The ideal order to present images (as array of indices)
+Task B — Extract factual product claims visible in each image:
+From each image, extract all technical or product attribute information that is explicitly communicated (on-image text, icons, diagrams, labeled parts, measurements, callouts, etc.).
+For each extracted claim output:
+- "attribute_id": stable snake_case id (examples: flush_system_type, trap_outlet_type, s_trap_or_p_trap, rough_in_inches, rim_type, bumper_design, dimensions, material_finish, flush_method, water_tank_compatibility)
+- "label": human readable label (short)
+- "value": the value shown in the image (verbatim if possible, otherwise normalized)
+- "answer_type": one of: "text", "choice", or "image"
+- If answer_type is "choice", also provide "options" (3-5 options) that are plausible sanitaryware choices; ensure the competitor's "value" is included in options.
+- "confidence": number 0-1 (how confident you are that value is correct from the image)
+- "evidence_text": short snippet of what you see (max ~20 words). If you cannot quote, set to "".
+
+Only output claims with confidence >= 0.55. If uncertain, omit the claim.
+
+Task C — Suggested missing images (additions):
+Study all images + the provided product description and infer whether there are vital catalog messages missing from the competitor images.
+You may suggest up to 2 additions.
+Each suggested addition must include:
+- "id", "title", "category"
+- "required_claims": up to 3 claim objects (same structure as Task B but without needing to be directly visible in competitor images; infer the most likely values using competitor images/description; confidence >= 0.5)
+- "generation_prompt_fragment": 2-3 sentences describing what this missing catalog image should communicate visually and the messaging/diagram/text style.
 
 Return valid JSON with this exact structure:
 {{
   "images": [
-    {{"index": 0, "type": "...", "intent": "...", "key_elements": [...], "priority": "..."}},
+    {{
+      "index": 0,
+      "type": "...",
+      "intent": "...",
+      "key_elements": [...],
+      "priority": "...",
+      "style_prompt": "...",
+      "claims": [
+        {{
+          "attribute_id": "...",
+          "label": "...",
+          "value": "...",
+          "answer_type": "text" | "choice" | "image",
+          "options": null | [...],
+          "confidence": 0.0,
+          "evidence_text": "..."
+        }}
+      ]
+    }},
     ...
   ],
   "catalog_strategy": "...",
-  "recommended_order": [0, 2, 1, ...]
+  "recommended_order": [0, 2, 1, ...],
+  "suggested_additions": [
+    {{
+      "id": "...",
+      "title": "...",
+      "category": "...",
+      "required_claims": [
+        {{
+          "attribute_id": "...",
+          "label": "...",
+          "value": "...",
+          "answer_type": "text" | "choice" | "image",
+          "options": null | [...],
+          "confidence": 0.0,
+          "evidence_text": "..."
+        }}
+      ],
+      "generation_prompt_fragment": "..."
+    }},
+    ...
+  ]
 }}"""
 
     contents = [prompt]
@@ -180,14 +237,23 @@ Return valid JSON with this exact structure:
             if attempt == 0:
                 time.sleep(2)
 
-    # Fallback: return generic structure
+    # Fallback: return generic structure (no claims / no additions)
     fallback = {
         "images": [
-            {"index": i, "type": "other", "intent": "Could not analyze", "key_elements": [], "priority": "medium"}
+            {
+                "index": i,
+                "type": "other",
+                "intent": "Could not analyze",
+                "key_elements": [],
+                "priority": "medium",
+                "style_prompt": "",
+                "claims": [],
+            }
             for i in range(n)
         ],
         "catalog_strategy": "Analysis unavailable.",
         "recommended_order": list(range(n)),
+        "suggested_additions": [],
     }
     return fallback, {"model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0, "cost_inr": 0, "operation": "Catalog Analysis"}
 
@@ -337,3 +403,180 @@ Return a valid JSON array of question objects."""
             "context": f"This was found in the competitor's catalog ({gap['category']}).",
         })
     return fallback, {"model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0, "cost_inr": 0, "operation": "Question Generation"}
+
+
+# ── Helpers for Image Generation ──
+
+def _is_upload_image_url(url_or_path: str) -> bool:
+    s = (url_or_path or "").strip().lower()
+    return s.startswith("/uploads/") and any(s.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"])
+
+
+def _extract_first_generated_image(response) -> Image.Image | None:
+    """
+    Extract the first generated image from a Gemini response.
+    """
+    try:
+        for part in getattr(response, "parts", []) or []:
+            if getattr(part, "inline_data", None) is not None:
+                return part.as_image()
+    except Exception:
+        return None
+    return None
+
+
+def _save_generated_image(output_path: Path, response) -> bool:
+    img = _extract_first_generated_image(response)
+    if img is None:
+        return False
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(output_path)
+    return True
+
+
+def _attributes_to_text(compiled_attributes: dict) -> str:
+    lines: list[str] = []
+    for k, v in (compiled_attributes or {}).items():
+        if isinstance(v, str) and _is_upload_image_url(v):
+            lines.append(f"- {k}: [user_provided_image]")
+        else:
+            lines.append(f"- {k}: {v}")
+    return "\n".join(lines)
+
+
+def _collect_answer_image_parts(compiled_attributes: dict) -> list[types.Part]:
+    parts: list[types.Part] = []
+    for _, v in (compiled_attributes or {}).items():
+        if isinstance(v, str) and _is_upload_image_url(v):
+            try:
+                parts.append(_load_image_for_gemini(v))
+            except Exception:
+                continue
+        if len(parts) >= 2:
+            break
+    return parts
+
+
+def generate_hero_image(
+    session_id: str,
+    product_images: list[str],
+    product_description: str,
+    compiled_attributes: dict,
+) -> tuple[str, dict]:
+    """
+    Generate a hero image and save it under outputs/{session_id}/hero/hero.png.
+    Returns (hero_url, cost_info).
+    """
+    client = get_client()
+    out_path = Path("outputs") / session_id / "hero" / "hero.png"
+
+    reference_images = (product_images or [])[:3]
+
+    prompt = f"""Create a premium white-background studio HERO product image for Ruva sanitaryware (toilet/WC).
+
+Reference the provided product images for the exact shape, proportions, and visible design details.
+Use a clean seamless white background, soft diffused lighting, minimal shadows, and a centered composition
+with a subtle 3/4 angle. Ensure no text, no competitor branding, and no watermark.
+
+Technical attributes to match (specs/feature values):
+{_attributes_to_text(compiled_attributes)}
+
+Product description context:
+{product_description}
+"""
+
+    contents: list = [prompt]
+    for img_url in reference_images:
+        contents.append(_load_image_for_gemini(img_url))
+
+    contents.extend(_collect_answer_image_parts(compiled_attributes))
+
+    last_err = None
+    for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
+        try:
+            response = client.models.generate_content(
+                model=attempt_model,
+                contents=contents,
+                config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+            )
+            cost = _extract_cost(response, attempt_model)
+            cost["operation"] = "Hero Image Generation"
+
+            ok = _save_generated_image(out_path, response)
+            if not ok:
+                raise RuntimeError("Hero generation returned no image part")
+
+            hero_url = f"/outputs/{session_id}/hero/hero.png"
+            return hero_url, cost
+        except Exception as e:
+            last_err = e
+
+    raise RuntimeError(f"Hero generation failed: {type(last_err).__name__}: {last_err}")
+
+
+def generate_catalog_image(
+    session_id: str,
+    image_key: str,
+    hero_image_url: str,
+    reference_intent_image_url: str | None,
+    style_prompt: str,
+    prompt_fragment: str,
+    compiled_attributes: dict,
+) -> tuple[str, dict]:
+    """
+    Generate a catalog image and save it under outputs/{session_id}/catalog/{image_key}.png.
+    Returns (image_url, cost_info).
+    """
+    client = get_client()
+    out_path = Path("outputs") / session_id / "catalog" / f"{image_key}.png"
+
+    attributes_text = _attributes_to_text(compiled_attributes)
+
+    prompt = f"""You are generating an e-commerce catalog image for Ruva.
+
+Goal:
+Recreate the competitor (or inferred) image INTENT and visual messaging for this catalog slot
+while using the provided HERO image as the visual anchor.
+
+Style cues:
+{style_prompt}
+
+Slot-specific instructions:
+{prompt_fragment}
+
+Technical attributes to match:
+{attributes_text}
+
+Rules:
+- Keep lighting, angle, and product framing consistent with the HERO image.
+- Do not copy competitor branding or add any logos/text.
+- Output a realistic studio product photo (or diagram style only if the reference intent is diagram-based).
+"""
+
+    contents: list = [prompt, _load_image_for_gemini(hero_image_url)]
+    if reference_intent_image_url:
+        contents.append(_load_image_for_gemini(reference_intent_image_url))
+
+    contents.extend(_collect_answer_image_parts(compiled_attributes))
+
+    last_err = None
+    for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
+        try:
+            response = client.models.generate_content(
+                model=attempt_model,
+                contents=contents,
+                config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+            )
+            cost = _extract_cost(response, attempt_model)
+            cost["operation"] = "Catalog Image Generation"
+
+            ok = _save_generated_image(out_path, response)
+            if not ok:
+                raise RuntimeError("Catalog generation returned no image part")
+
+            image_url = f"/outputs/{session_id}/catalog/{image_key}.png"
+            return image_url, cost
+        except Exception as e:
+            last_err = e
+
+    raise RuntimeError(f"Catalog generation failed: {type(last_err).__name__}: {last_err}")
