@@ -1,4 +1,4 @@
-# Ruva Catalog Generator
+# AI Catalog Generator
 
 > Turn a competitor's Amazon/Flipkart listing into a complete, professional product catalog — automatically.
 
