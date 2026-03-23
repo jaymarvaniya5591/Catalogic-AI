@@ -13,6 +13,7 @@ const state = {
     // Step 2
     productFiles: [],
     productDescription: '',
+    competitorImages: [],  // URL paths on server (from scrape or upload)
 
     // Step 3
     analysis: null,
@@ -25,7 +26,11 @@ const state = {
     // Step 5
     catalogImages: [],
     catalogTotal: 0,
-    catalogCompleted: 0
+    catalogCompleted: 0,
+
+    // Cost tracking
+    totalCostInr: 0,
+    costs: [],
 };
 
 // ── Step Navigation ──
@@ -207,11 +212,17 @@ function initNavigation() {
         const ok = await uploadProductImages();
         if (!ok) return;
         goToStep(3);
+        runAnalysis();
     });
 
     // Step 3
     document.getElementById('btn-step3-back').addEventListener('click', () => goToStep(2));
-    document.getElementById('btn-step3-next').addEventListener('click', () => goToStep(4));
+    document.getElementById('btn-step3-next').addEventListener('click', async () => {
+        collectAnswers();
+        const ok = await submitAnswers();
+        if (!ok) return;
+        goToStep(4);
+    });
 
     // Step 4
     document.getElementById('btn-step4-back').addEventListener('click', () => goToStep(3));
@@ -277,6 +288,7 @@ async function scrapeCompetitorUrl() {
             state.sessionId = data.session_id;
             state.scraped = data;
             state.competitorUrl = url;
+            state.competitorImages = data.images || [];
             showScrapedResults(data);
             showStatus(1, `Found ${data.images.length} images from ${data.platform}`, 'success');
             document.getElementById('btn-step1-next').disabled = false;
@@ -351,6 +363,7 @@ async function uploadCompetitorImages() {
 
         if (data.success) {
             state.sessionId = data.session_id;
+            state.competitorImages = data.images || [];
             showStatus(1, `Uploaded ${data.images.length} images`, 'success');
             return true;
         } else {
@@ -398,8 +411,269 @@ async function uploadProductImages() {
     }
 }
 
-// ── API Stubs (Phase 3+) ──
-async function runAnalysis() { /* POST /api/analyze */ }
+// ── API: Run Analysis (Step 3) ──
+async function runAnalysis() {
+    // Skip re-run if analysis already exists (user navigated back/forward)
+    if (state.analysis) {
+        renderAnalysisResults(state.analysis);
+        renderQuestions(state.questions);
+        validateStep3();
+        return;
+    }
+
+    showStatus(3, 'Analyzing competitor catalog... this may take 30-60 seconds.');
+    document.getElementById('btn-step3-next').disabled = true;
+    document.getElementById('analysis-grid').innerHTML =
+        '<div class="placeholder-message"><div class="spinner"></div><p>Analyzing competitor images...</p></div>';
+    document.getElementById('questions-list').innerHTML =
+        '<div class="placeholder-message">Questions will appear after analysis...</div>';
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+    try {
+        const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: state.sessionId }),
+            signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        const data = await res.json();
+
+        if (data.success) {
+            state.analysis = data.analysis;
+            state.questions = data.questions || [];
+            renderAnalysisResults(data.analysis);
+            renderQuestions(data.questions || []);
+            if (data.costs) updateCostDisplay(data.costs, data.total_cost_inr);
+            showStatus(3, 'Analysis complete. Answer the questions below or skip for smart defaults.', 'success');
+            validateStep3();
+        } else {
+            showStatus(3, data.error || 'Analysis failed. Please try again.', 'error');
+        }
+    } catch (err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+            showStatus(3, 'Analysis timed out. Please try again.', 'error');
+        } else {
+            showStatus(3, 'Network error during analysis. Is the server running?', 'error');
+        }
+    }
+}
+
+// ── Render Analysis Results ──
+function renderAnalysisResults(analysis) {
+    const grid = document.getElementById('analysis-grid');
+    grid.innerHTML = '';
+
+    // Show catalog strategy above grid
+    const existingStrategy = document.querySelector('.catalog-strategy');
+    if (existingStrategy) existingStrategy.remove();
+
+    if (analysis.catalog_strategy) {
+        const strategyEl = document.createElement('p');
+        strategyEl.className = 'catalog-strategy';
+        strategyEl.textContent = analysis.catalog_strategy;
+        grid.parentElement.insertBefore(strategyEl, grid);
+    }
+
+    const images = analysis.images || [];
+    images.forEach(img => {
+        const card = document.createElement('div');
+        card.className = 'analysis-card';
+
+        const imgUrl = state.competitorImages[img.index] || '';
+        card.innerHTML = `
+            <div class="analysis-image">
+                <img src="${imgUrl}" alt="Competitor image ${img.index + 1}" />
+            </div>
+            <div class="analysis-info">
+                <span class="intent-badge">${img.type}</span>
+                <span class="priority-badge priority-${img.priority}">${img.priority}</span>
+                <p class="intent-description">${img.intent}</p>
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+}
+
+// ── Render Smart Questions ──
+function renderQuestions(questions) {
+    const list = document.getElementById('questions-list');
+    list.innerHTML = '';
+
+    if (!questions.length) {
+        list.innerHTML = '<div class="placeholder-message">No additional questions needed.</div>';
+        return;
+    }
+
+    questions.forEach(q => {
+        const card = document.createElement('div');
+        card.className = 'question-card';
+        card.dataset.questionId = q.id;
+
+        let inputHTML = '';
+        if (q.type === 'choice' && q.options) {
+            const optionsHTML = q.options.map(opt =>
+                `<label class="choice-option">
+                    <input type="radio" name="q_${q.id}" value="${opt}" class="question-answer" data-qid="${q.id}" />
+                    <span>${opt}</span>
+                </label>`
+            ).join('');
+            inputHTML = `
+                <div class="question-choices">${optionsHTML}</div>
+                <button class="btn btn-skip" onclick="skipQuestion('${q.id}', this)">Skip</button>
+            `;
+        } else if (q.type === 'image') {
+            inputHTML = `
+                <div class="question-input">
+                    <label class="btn btn-secondary btn-small" style="cursor:pointer;">
+                        Upload Image
+                        <input type="file" accept="image/*" class="question-answer"
+                               data-qid="${q.id}" hidden onchange="handleQuestionImage(this, '${q.id}')" />
+                    </label>
+                    <span class="question-image-name" id="qimg-${q.id}"></span>
+                    <button class="btn btn-skip" onclick="skipQuestion('${q.id}', this)">Skip</button>
+                </div>
+            `;
+        } else {
+            // Default: text input
+            inputHTML = `
+                <div class="question-input">
+                    <input type="text" class="text-input question-answer"
+                           data-qid="${q.id}"
+                           placeholder="${q.default_value || 'Type your answer...'}" />
+                    <button class="btn btn-skip" onclick="skipQuestion('${q.id}', this)">Skip</button>
+                </div>
+            `;
+        }
+
+        card.innerHTML = `
+            <p class="question-text">${q.text}</p>
+            ${q.context ? `<p class="question-context">${q.context}</p>` : ''}
+            ${inputHTML}
+            <p class="question-default" id="default-${q.id}" style="display:none;">
+                Using default: <em>${q.default_value || 'Standard premium quality'}</em>
+            </p>
+        `;
+        list.appendChild(card);
+    });
+}
+
+// ── Question Helpers ──
+function skipQuestion(qid, btn) {
+    state.answers[qid] = null; // null = use default
+    const card = btn.closest('.question-card');
+    card.classList.add('skipped');
+    document.getElementById(`default-${qid}`).style.display = 'block';
+    card.querySelectorAll('.question-answer').forEach(i => i.disabled = true);
+    btn.textContent = 'Skipped';
+    btn.disabled = true;
+    validateStep3();
+}
+
+function handleQuestionImage(input, qid) {
+    if (input.files.length > 0) {
+        state.answers[qid] = input.files[0];
+        document.getElementById(`qimg-${qid}`).textContent = input.files[0].name;
+        validateStep3();
+    }
+}
+
+function validateStep3() {
+    const btn = document.getElementById('btn-step3-next');
+    btn.disabled = !state.analysis;
+}
+
+function collectAnswers() {
+    document.querySelectorAll('.question-answer').forEach(el => {
+        const qid = el.dataset.qid;
+        if (!qid || qid in state.answers) return; // already set (skipped or image)
+
+        if (el.type === 'text') {
+            state.answers[qid] = el.value.trim() || null;
+        } else if (el.type === 'radio' && el.checked) {
+            state.answers[qid] = el.value;
+        }
+    });
+}
+
+async function submitAnswers() {
+    const textAnswers = {};
+    for (const [k, v] of Object.entries(state.answers)) {
+        if (v instanceof File) {
+            textAnswers[k] = `[image: ${v.name}]`;
+        } else {
+            textAnswers[k] = v;
+        }
+    }
+
+    try {
+        const res = await fetch('/api/answers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: state.sessionId, answers: textAnswers }),
+        });
+        const data = await res.json();
+        return data.success;
+    } catch (err) {
+        showStatus(3, 'Failed to save answers.', 'error');
+        return false;
+    }
+}
+
+// ── Cost Display ──
+function updateCostDisplay(newCosts, totalInr) {
+    if (!newCosts || !newCosts.length) return;
+
+    state.costs.push(...newCosts);
+    state.totalCostInr = totalInr || state.costs.reduce((sum, c) => sum + (c.cost_inr || 0), 0);
+
+    const ticker = document.getElementById('cost-ticker');
+    const valueEl = document.getElementById('cost-value');
+    ticker.style.display = 'flex';
+    valueEl.textContent = `₹${state.totalCostInr.toFixed(2)}`;
+
+    // Pulse animation
+    ticker.classList.remove('cost-pulse');
+    void ticker.offsetWidth; // trigger reflow
+    ticker.classList.add('cost-pulse');
+
+    // Update breakdown
+    renderCostDetails();
+}
+
+function renderCostDetails() {
+    const details = document.getElementById('cost-details');
+    let html = '';
+    state.costs.forEach(c => {
+        const tokens = (c.input_tokens || 0) + (c.output_tokens || 0);
+        const tokenStr = tokens > 1000 ? `${(tokens / 1000).toFixed(1)}K` : tokens;
+        html += `
+            <div class="cost-row">
+                <span class="cost-op">${c.operation || c.model}</span>
+                <span class="cost-tokens">${tokenStr} tokens</span>
+                <span class="cost-amount">₹${(c.cost_inr || 0).toFixed(2)}</span>
+            </div>
+        `;
+    });
+    html += `
+        <div class="cost-row cost-total-row">
+            <span class="cost-op">Total</span>
+            <span></span>
+            <span class="cost-amount">₹${state.totalCostInr.toFixed(2)}</span>
+        </div>
+    `;
+    details.innerHTML = html;
+}
+
+function toggleCostDetails() {
+    const details = document.getElementById('cost-details');
+    details.classList.toggle('open');
+}
+
+// ── API Stubs (Phase 4+) ──
 async function generateHeroImage() { /* POST /api/generate-hero */ }
 async function regenerateHero() { /* POST /api/generate-hero */ }
 function startCatalogGeneration() { /* GET /api/generate-catalog/stream via EventSource */ }

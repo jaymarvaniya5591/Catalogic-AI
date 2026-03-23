@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -8,6 +9,11 @@ from fastapi.responses import FileResponse
 
 from config import UPLOAD_DIR, OUTPUT_DIR
 from scraper import scrape_product_url
+from gemini_service import (
+    analyze_competitor_catalog,
+    detect_information_gaps,
+    generate_smart_questions,
+)
 
 BASE_DIR = Path(__file__).parent
 
@@ -45,6 +51,7 @@ def create_session(session_id: str) -> dict:
         "answers": None,
         "hero_image": None,
         "catalog_images": [],
+        "costs": [],
     }
     sessions[session_id] = session
     return session
@@ -179,6 +186,81 @@ async def upload_product(
         "images": image_paths,
         "description": description,
     }
+
+
+@app.post("/api/analyze")
+async def analyze(payload: dict):
+    """Run competitor analysis pipeline: analyze → detect gaps → generate questions."""
+    session_id = payload.get("session_id", "")
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    session = sessions[session_id]
+    competitor = session["competitor"]
+    product = session["product"]
+
+    if not competitor["images"]:
+        return {"success": False, "error": "No competitor images found"}
+
+    try:
+        # Step 1: Analyze competitor catalog images
+        description = competitor.get("description", "")
+        features = competitor.get("features", [])
+        full_description = description + "\n" + "\n".join(features)
+
+        analysis, cost1 = await asyncio.to_thread(
+            analyze_competitor_catalog,
+            competitor["images"],
+            full_description,
+        )
+
+        # Step 2: Detect information gaps (rule-based, fast)
+        gaps = detect_information_gaps(competitor, product, analysis)
+
+        # Step 3: Generate smart questions from gaps
+        questions, cost2 = await asyncio.to_thread(
+            generate_smart_questions,
+            gaps,
+            analysis,
+        )
+
+        # Store in session
+        session["analysis"] = analysis
+        session["questions"] = questions
+        session["costs"].extend([cost1, cost2])
+
+        total_cost_inr = sum(c.get("cost_inr", 0) for c in session["costs"])
+
+        return {
+            "success": True,
+            "analysis": analysis,
+            "questions": questions,
+            "costs": [cost1, cost2],
+            "total_cost_inr": round(total_cost_inr, 4),
+        }
+    except Exception as e:
+        print(f"[SERVER] Analysis failed: {type(e).__name__}: {e}")
+        return {"success": False, "error": f"Analysis failed: {str(e)}"}
+
+
+@app.post("/api/answers")
+async def submit_answers(payload: dict):
+    """Save user's answers to smart questions, merging defaults for skipped ones."""
+    session_id = payload.get("session_id", "")
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    session = sessions[session_id]
+    answers = payload.get("answers", {})
+
+    # Merge defaults for skipped/empty answers
+    if session["questions"]:
+        for q in session["questions"]:
+            if q["id"] not in answers or not answers[q["id"]]:
+                answers[q["id"]] = q.get("default_value", "")
+
+    session["answers"] = answers
+    return {"success": True, "answers": answers}
 
 
 # Mount static directories (after all route definitions)

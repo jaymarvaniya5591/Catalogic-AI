@@ -500,6 +500,115 @@ body {
     flex: 1;
 }
 
+.btn-skip {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all var(--transition);
+    white-space: nowrap;
+}
+
+.btn-skip:hover {
+    border-color: var(--accent-gold);
+    color: var(--accent-gold);
+}
+
+.btn-skip:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.catalog-strategy {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--accent-gold-dim);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--accent-gold);
+}
+
+.question-context {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.question-default {
+    font-size: 12px;
+    color: var(--accent-gold);
+    margin-top: 8px;
+}
+
+.question-card.skipped {
+    opacity: 0.6;
+    border-color: var(--border);
+}
+
+.question-choices {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.choice-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-primary);
+    transition: border-color var(--transition);
+}
+
+.choice-option:hover {
+    border-color: var(--accent-gold);
+}
+
+.choice-option input[type="radio"] {
+    accent-color: var(--accent-gold);
+}
+
+.question-image-name {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.priority-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 8px;
+    margin-left: 4px;
+}
+
+.priority-high {
+    background: rgba(200, 80, 80, 0.15);
+    color: #c85050;
+}
+
+.priority-medium {
+    background: rgba(200, 160, 60, 0.15);
+    color: #c8a03c;
+}
+
+.priority-low {
+    background: rgba(80, 160, 80, 0.15);
+    color: #50a050;
+}
+
 /* ── Hero Image (Step 4) ── */
 .hero-container {
     background: var(--bg-card);
@@ -660,6 +769,120 @@ body {
     padding: 24px;
     background: var(--accent-gold-dim);
     border-radius: var(--radius);
+}
+
+/* ── Cost Ticker ── */
+.cost-ticker {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    z-index: 1000;
+    font-family: 'Inter', sans-serif;
+}
+
+.cost-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--accent-gold);
+    border-radius: 20px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: all var(--transition);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.cost-summary:hover {
+    background: var(--bg-card);
+    box-shadow: 0 4px 24px rgba(160, 144, 96, 0.2);
+}
+
+.cost-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.cost-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent-gold);
+}
+
+.cost-details {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 8px;
+    min-width: 240px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.cost-details.open {
+    display: flex;
+}
+
+.cost-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+}
+
+.cost-op {
+    flex: 1;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.cost-tokens {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.cost-amount {
+    font-weight: 600;
+    color: var(--accent-gold);
+    min-width: 50px;
+    text-align: right;
+}
+
+.cost-total-row {
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+    padding-top: 8px;
+}
+
+.cost-total-row .cost-op {
+    font-weight: 700;
+}
+
+.cost-total-row .cost-amount {
+    font-weight: 700;
+    font-size: 13px;
+}
+
+@keyframes costPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+.cost-pulse .cost-summary {
+    animation: costPulse 0.3s ease;
 }
 
 /* ── Responsive ── */
