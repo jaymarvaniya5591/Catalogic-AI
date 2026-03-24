@@ -14,6 +14,7 @@ from scraper import scrape_product_url
 from gemini_service import (
     analyze_competitor_catalog,
     analyze_user_product_images,
+    generate_master_context_block,
     generate_hero_image,
     generate_catalog_image,
 )
@@ -927,9 +928,27 @@ async def api_generate_hero(
         product_images = product.get("images", []) or []
         compiled_attributes = session.get("compiled_attributes", {}) or {}
 
-        timeout_s = 90
+        timeout_s = 120  # increased to account for master context generation
         if not regenerate and session.get("hero_image"):
             return {"success": True, "hero_image_url": session["hero_image"], "mode": "cached", "costs": []}
+
+        # Generate master context block (rich product description + photography style)
+        # This replaces dry key-value attributes with natural-language prose
+        if not session.get("master_context_block") or regenerate:
+            try:
+                master_context, mc_cost = await asyncio.wait_for(
+                    generate_master_context_block(
+                        product_images,
+                        product_description,
+                        compiled_attributes,
+                    ),
+                    timeout=30,
+                )
+                session["master_context_block"] = master_context
+                session["costs"].append(mc_cost)
+            except Exception as e:
+                print(f"[WARN] Master context generation failed, using fallback: {e}")
+                session["master_context_block"] = ""
 
         hero_url, cost = await asyncio.wait_for(
             generate_hero_image(
@@ -937,6 +956,7 @@ async def api_generate_hero(
                 product_images,
                 product_description,
                 compiled_attributes,
+                master_context=session.get("master_context_block", ""),
             ),
             timeout=timeout_s,
         )
@@ -982,9 +1002,10 @@ async def api_generate_catalog_stream(session_id: str):
         jobs.append({
             "key": f"competitor_{int(idx)}",
             "type": "competitor",
+            "image_type": img.get("type") or "other",
             "reference_intent_image_url": competitor_url,
             "style_prompt": img.get("style_prompt") or "",
-            "prompt_fragment": f"Intent: {img.get('intent') or ''}\nKey elements: {', '.join([str(x) for x in (img.get('key_elements') or [])])}",
+            "prompt_fragment": f"INTENT: {img.get('intent') or ''}\nVISUAL ELEMENTS: {', '.join([str(x) for x in (img.get('key_elements') or [])])}\nDETAILED SCENE DESCRIPTION: {img.get('summary') or ''}",
             "image_key": f"competitor_{int(idx)}",
             "image_index": int(idx),
         })
@@ -1076,6 +1097,8 @@ async def api_generate_catalog_stream(session_id: str):
                             job.get("prompt_fragment") or "",
                             job_compiled_attributes,
                             changed_attributes=changed_attrs or None,
+                            master_context=session.get("master_context_block", ""),
+                            image_type=job.get("image_type") or "other",
                         ),
                         timeout=timeout_s,
                     )
@@ -1150,6 +1173,8 @@ async def api_regenerate_catalog(
     style_prompt = ""
     prompt_fragment = ""
 
+    regen_image_type = "other"
+
     if image_key.startswith("competitor_"):
         idx = int(image_key.replace("competitor_", ""))
         img = by_index.get(idx)
@@ -1157,7 +1182,8 @@ async def api_regenerate_catalog(
             return {"success": False, "error": "IMAGE_NOT_FOUND"}
         reference_intent_image_url = competitor_images[idx] if idx < len(competitor_images) else None
         style_prompt = img.get("style_prompt") or ""
-        prompt_fragment = img.get("intent") or ""
+        prompt_fragment = f"INTENT: {img.get('intent') or ''}\nVISUAL ELEMENTS: {', '.join([str(x) for x in (img.get('key_elements') or [])])}\nDETAILED SCENE DESCRIPTION: {img.get('summary') or ''}"
+        regen_image_type = img.get("type") or "other"
     elif image_key.startswith("addition_"):
         aid = image_key.replace("addition_", "")
         additions = analysis.get("suggested_additions", []) or []
@@ -1184,6 +1210,8 @@ async def api_regenerate_catalog(
                 style_prompt,
                 prompt_fragment,
                 compiled_attributes,
+                master_context=session.get("master_context_block", ""),
+                image_type=regen_image_type,
             ),
             timeout=180,
         )

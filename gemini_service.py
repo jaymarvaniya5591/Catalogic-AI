@@ -42,7 +42,7 @@ MIME_MAP = {
     ".gif": "image/gif",
 }
 
-MAX_IMAGE_BYTES = 4_000_000  # 4 MB
+MAX_IMAGE_BYTES = 10_000_000  # 10 MB (Gemini supports up to 20MB)
 
 
 def _load_image_for_gemini(url_path: str) -> types.Part:
@@ -76,9 +76,9 @@ def _resize_image(image_bytes: bytes, mime_type: str) -> bytes:
         if buf.tell() <= MAX_IMAGE_BYTES:
             return buf.getvalue()
 
-    # Last resort — very small
+    # Last resort — preserve reasonable quality
     buf = BytesIO()
-    img.resize((800, 600), Image.LANCZOS).save(buf, format=fmt, quality=70)
+    img.resize((2048, 2048), Image.LANCZOS).save(buf, format=fmt, quality=85)
     return buf.getvalue()
 
 
@@ -211,7 +211,13 @@ For each image (numbered 0 through {n - 1}), identify:
 3. "summary": A detailed 2-3 sentence summary of EVERYTHING visible in this image — exact product color/finish, all text (OCR), every specification, every measurement, every diagram element, every label, every callout, background/setting details. Describe with maximum detail.
 4. "key_elements": List of visual elements present (e.g. ["bathroom setting", "marble countertop", "warm lighting"])
 5. "priority": "high", "medium", or "low" — how important this image type is for a catalog
-6. "style_prompt": A short reusable prompt fragment (1-2 sentences) describing the visual style/messages for this image type (NOT the actual product specs).
+6. "style_prompt": A detailed 3-5 sentence description of what this catalog image communicates and HOW it does so visually. Structure it as:
+   - Composition type: single hero shot / multi-view diagram / infographic with callouts / cross-section / lifestyle / dimensions diagram / feature highlight
+   - EXACT number of product views shown and their arrangement (e.g., "4 views arranged in 2x2 grid: top-left is top view, top-right is bottom view, bottom-left is side view, bottom-right is back view")
+   - Text placement style and typography approach (font color, overlay style, heading vs body)
+   - Background treatment, lighting mood, camera angle(s)
+   - Information hierarchy (what's most prominent vs supporting)
+   Be specific enough that someone could recreate the EXACT SAME LAYOUT for a completely different product. Do NOT include actual product specs — focus on the visual storytelling approach and structure.
 
 Task B — OCR-style extraction + factual product claims visible in each image:
 From each image, do two things:
@@ -449,6 +455,135 @@ Return valid JSON matching this structure exactly."""
     }
 
 
+# ── Master Context Block Generation ──
+
+async def generate_master_context_block(
+    product_images: list[str],
+    product_description: str,
+    compiled_attributes: dict,
+) -> tuple[str, dict]:
+    """
+    Generate a rich, reusable master context block that describes the product
+    and photography style in detail. This replaces dry key-value attributes
+    with natural-language prose that produces far better image generation results.
+
+    Works for ANY product category — the model determines the appropriate
+    environment and photography style based on the product type.
+
+    Returns (master_context_text, cost_info).
+    """
+    client = get_client()
+    attributes_text = _attributes_to_text(compiled_attributes)
+
+    prompt = f"""You are a professional product photographer and catalog designer.
+I'm giving you reference images of a product and its description. Your job is to create a detailed
+MASTER CONTEXT BLOCK that will be reused across multiple image generation prompts to ensure consistency.
+
+Product description:
+{product_description}
+
+Known technical attributes:
+{attributes_text}
+
+Generate TWO sections:
+
+SECTION A — PRODUCT LOCKED SPECS:
+Write a dense, visual, natural-language description of the product (~200 words). Cover:
+- Exact product type and category
+- Brand name (if visible or mentioned)
+- Shape, form factor, silhouette — describe with precision (e.g., "elongated oval bowl, smooth curved body")
+- Color, finish, surface texture (e.g., "glossy pure white ceramic, high-gloss, mirror-like surface sheen")
+- Material and construction details
+- Key design features visible in the images
+- Proportions and dimensional relationships between parts
+- Any buttons, handles, mechanisms, or functional elements
+- Base/mounting style
+
+Study the reference images carefully and describe what you SEE, not what you assume.
+Use the technical attributes to add precision, but always prioritize visual accuracy from the images.
+
+SECTION B — PHOTOGRAPHY STYLE LOCKED:
+Based on the product category, determine the ideal premium photography environment and write locked style parameters:
+- Rendering style (always: "Hyperrealistic photographic rendering — NOT illustrative, NOT cartoon, NOT 3D render")
+- Lighting (natural soft daylight, warm morning/afternoon light — specify exact direction e.g. "from upper-left at 45 degrees")
+- Environment/setting appropriate for this product category (e.g., marble bathroom for sanitaryware, modern kitchen for cookware, elegant bedroom for bedding, studio for electronics) — be VERY specific about wall material/color, floor material/color, and ambient elements
+- Camera style (DSLR-quality depth of field, sharp product focus)
+- Color grading (warm, premium, aspirational)
+- Aspect ratio: 1:1 square
+- SINGLE PRODUCT ONLY: Every image must show exactly ONE product unit — never duplicate, mirror, or show multiple copies of the product
+- What to exclude (no text, no watermarks, no logos unless generating infographic)
+
+SECTION C — TYPOGRAPHY LOCKED (for infographic/diagram images):
+Define a premium typography system that ALL text-containing catalog images MUST follow identically:
+- Font: Thin/light-weight elegant sans-serif (like Montserrat Light, Lato Light, or SF Pro Display Thin) — NOT bold, NOT heavy
+- Headings: Thin uppercase sans-serif, generous letter-spacing (tracking), centered/symmetric placement
+- Body/label text: Light weight, same font family, slightly smaller
+- Color scheme: White or warm off-white (#F5F0E8) text. For dark backgrounds use white; for light backgrounds use charcoal (#2A2A2A)
+- Accent: Subtle warm gold/amber (#C4A265) for divider lines, callout connectors, or highlight borders — used sparingly
+- Callout lines: Thin (1-2px), straight, connecting product features to labels — elegant, not cluttered
+- Icons: Minimal line-art style, monochrome, matching text color — NOT colorful, NOT filled/heavy
+- Layout: Symmetric and balanced — headings centered, callouts evenly distributed, equal spacing
+- ALL infographic images MUST use this IDENTICAL typography — same font weight, same colors, same icon style
+
+Format your output EXACTLY like this (plain text, not JSON):
+
+PRODUCT LOCKED SPECS:
+[Your detailed product description here]
+
+PHOTOGRAPHY STYLE LOCKED:
+- [Style parameter 1]
+- [Style parameter 2]
+- [etc.]
+"""
+
+    contents: list = [prompt]
+    for img_url in (product_images or [])[:3]:
+        try:
+            contents.append(_load_image_for_gemini(img_url))
+        except Exception:
+            continue
+
+    for attempt in range(2):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_ANALYSIS,
+                contents=contents,
+            )
+            cost = _extract_cost(response, MODEL_ANALYSIS)
+            cost["operation"] = "Master Context Generation"
+
+            master_context = response.text.strip()
+            if master_context:
+                return master_context, cost
+            raise RuntimeError("Empty master context response")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[GEMINI] master context attempt {attempt + 1} failed: {e}")
+            if attempt == 0:
+                await asyncio.sleep(2)
+
+    # Fallback: build a basic context from attributes
+    fallback = f"""PRODUCT LOCKED SPECS:
+{product_description}
+
+Technical attributes:
+{attributes_text}
+
+PHOTOGRAPHY STYLE LOCKED:
+- Hyperrealistic photographic rendering — NOT illustrative, NOT cartoon, NOT 3D render
+- Natural soft daylight — warm morning/afternoon light from a window
+- Premium setting appropriate for this product category
+- Camera: DSLR-quality depth of field — sharp product, gentle background blur
+- Aspect ratio: 1:1 square
+- NO text, NO watermarks, NO logos unless explicitly generating an infographic
+"""
+    return fallback, {
+        "model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0,
+        "cost_usd": 0, "cost_inr": 0, "operation": "Master Context Generation (fallback)",
+    }
+
+
 # ── Function 2: Detect Information Gaps (rule-based) ──
 
 def detect_information_gaps(
@@ -639,10 +774,11 @@ def _save_generated_image(output_path: Path, response) -> bool:
 def _attributes_to_text(compiled_attributes: dict) -> str:
     lines: list[str] = []
     for k, v in (compiled_attributes or {}).items():
+        label = k.replace("_", " ").title()
         if isinstance(v, str) and _is_upload_image_url(v):
-            lines.append(f"- {k}: [user_provided_image]")
+            lines.append(f"- {label}: [see reference image]")
         else:
-            lines.append(f"- {k}: {v}")
+            lines.append(f"- {label}: {v}")
     return "\n".join(lines)
 
 
@@ -664,6 +800,7 @@ async def generate_hero_image(
     product_images: list[str],
     product_description: str,
     compiled_attributes: dict,
+    master_context: str = "",
 ) -> tuple[str, dict]:
     """
     Generate a hero image and save it under outputs/{session_id}/hero/hero.png.
@@ -674,19 +811,39 @@ async def generate_hero_image(
 
     reference_images = (product_images or [])[:3]
 
-    prompt = f"""Create a hyperrealistic, premium, high-resolution studio HERO product image for Ruva sanitaryware (toilet/WC).
-This must be Amazon A+ grade listing quality — top 0.01% of product listings in this category.
-
-Reference the provided product images for the exact shape, proportions, and visible design details.
-Use a clean seamless white background, perfect studio lighting with soft diffused shadows, and a centered composition
-with a subtle 3/4 angle. Use your knowledge of premium product photography: perfect reflections, subtle gradient lighting, professional composition.
-Ensure no text, no competitor branding, and no watermark.
-
-Technical attributes to match (specs/feature values):
-{_attributes_to_text(compiled_attributes)}
-
-Product description context:
+    # Use master context if available, otherwise fall back to attributes
+    context_block = master_context if master_context else f"""Product description:
 {product_description}
+
+Technical attributes:
+{_attributes_to_text(compiled_attributes)}
+"""
+
+    prompt = f"""Generate ONE hyperrealistic photograph of this product as the HERO catalog image.
+This is the VISUAL ANCHOR — all other catalog images will reference this for consistent product appearance.
+
+{context_block}
+
+CRITICAL REQUIREMENTS:
+- The product must be the SOLE subject — exactly ONE product unit, never duplicated or mirrored
+- Placed in a premium environment appropriate for this product category (the master context defines the exact environment)
+- Warm natural daylight streaming from the left side at ~45 degrees, creating subtle soft shadows on the right
+- Hyperrealistic PHOTOGRAPH — NOT a 3D render, NOT an illustration, NOT CGI
+- DSLR-quality: sharp focus on the product, gentle depth-of-field blur on the background
+- Camera angle: 3/4 front view, slightly elevated — showing the product's best angle with full dimensionality
+- Full product visible with ~10% breathing room on all sides
+- Amazon A+ listing quality — top 0.01% of product images in this category
+- NO text, NO watermarks, NO branding, NO logos anywhere in the image
+
+PRODUCT FIDELITY (MOST IMPORTANT):
+- Study the reference product images PIXEL BY PIXEL before generating
+- The generated product must be INDISTINGUISHABLE from the reference — same exact silhouette, same proportions, same design language
+- Reproduce EVERY detail: exact bowl/body shape, tank/top proportions, button/handle style and placement, base profile, surface curvature, edge treatments
+- If the reference shows a specific ratio between parts (e.g., tank height vs bowl height), maintain that EXACT ratio
+- If the reference shows rounded corners vs sharp corners, curved vs angular surfaces — match it precisely
+- DO NOT use a generic product shape. The reference images ARE the ground truth
+- Common mistakes to AVOID: wrong proportions, generic/default shapes, missing or altered design details, different hardware/buttons, smoothing over distinctive features
+- The viewer should look at the generated image and the reference and believe they are the SAME physical product photographed in a different setting
 """
 
     contents: list = [prompt]
@@ -697,23 +854,36 @@ Product description context:
 
     last_err = None
     for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
-        try:
-            response = await client.aio.models.generate_content(
-                model=attempt_model,
-                contents=contents,
-                config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
-            )
-            cost = _extract_cost(response, attempt_model)
-            cost["operation"] = "Hero Image Generation"
+        # Try with higher resolution first, fall back if model rejects image_size
+        for img_config in [
+            types.ImageConfig(aspect_ratio="1:1", image_size="2K"),
+            types.ImageConfig(aspect_ratio="1:1"),
+        ]:
+            try:
+                response = await client.aio.models.generate_content(
+                    model=attempt_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=img_config,
+                    ),
+                )
+                cost = _extract_cost(response, attempt_model)
+                cost["operation"] = "Hero Image Generation"
 
-            ok = _save_generated_image(out_path, response)
-            if not ok:
-                raise RuntimeError("Hero generation returned no image part")
+                ok = _save_generated_image(out_path, response)
+                if not ok:
+                    raise RuntimeError("Hero generation returned no image part")
 
-            hero_url = f"/outputs/{session_id}/hero/hero.png"
-            return hero_url, cost
-        except Exception as e:
-            last_err = e
+                hero_url = f"/outputs/{session_id}/hero/hero.png"
+                return hero_url, cost
+            except Exception as e:
+                err_str = str(e).lower()
+                if "image_size" in err_str or "image size" in err_str:
+                    print(f"[GEMINI] image_size not supported by {attempt_model}, retrying without it")
+                    continue  # try without image_size
+                last_err = e
+                break  # move to fallback model
 
     raise RuntimeError(f"Hero generation failed: {type(last_err).__name__}: {last_err}")
 
@@ -727,6 +897,8 @@ async def generate_catalog_image(
     prompt_fragment: str,
     compiled_attributes: dict,
     changed_attributes: dict | None = None,
+    master_context: str = "",
+    image_type: str = "other",
 ) -> tuple[str, dict]:
     """
     Generate a catalog image and save it under outputs/{session_id}/catalog/{image_key}.png.
@@ -747,29 +919,94 @@ For all other attributes, match the competitor image's approach and visual style
     else:
         changed_section = "Match all attributes from the competitor image's approach, using this product's appearance from the HERO image."
 
-    prompt = f"""You are generating a hyperrealistic, premium, Amazon A+ grade catalog image for Ruva.
-This must be top 0.01% listing quality. Use your knowledge of premium typography, layout design, and professional product photography.
+    # Use master context if available, otherwise fall back to attributes
+    context_block = master_context if master_context else f"""Technical attributes:
+{attributes_text}
+"""
 
-Goal:
-Recreate the competitor (or inferred) image INTENT and visual messaging for this catalog slot
-while using the provided HERO image as the visual anchor for product appearance.
+    # Hero-type environment override — when regenerating a hero-style image,
+    # ignore the competitor's environment entirely (e.g., their teal wall)
+    hero_env_override = ""
+    if image_type == "hero" and reference_intent_image_url:
+        hero_env_override = """
+ENVIRONMENT OVERRIDE (this slot is a HERO-style image):
+- IGNORE the environment/setting shown in Image 2 (the competitor's image) — do NOT copy their wall color, floor, or background
+- Use ONLY the environment from Image 1 (YOUR hero image) — same walls, floor, lighting
+- Image 2 is ONLY a reference for camera angle, composition, and framing — NOT for environment/background
+"""
 
-Style cues:
+    # Build the image reference instructions based on what we have
+    if reference_intent_image_url:
+        image_ref_block = """You are given TWO reference images:
+- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. The generated image must show this EXACT product — same shape, color, proportions, design details, and surface finish.
+- IMAGE 2 (COMPETITOR INTENT): This shows what this catalog slot needs to COMMUNICATE — the purpose, composition, information, and visual story. Recreate the SAME PURPOSE for our product from Image 1."""
+    else:
+        image_ref_block = """You are given ONE reference image:
+- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. The generated image must show this EXACT product — same shape, color, proportions, design details, and surface finish.
+Use the slot instructions below to determine what this catalog image should communicate."""
+
+    prompt = f"""Generate ONE catalog image for an Amazon A+ product listing.
+
+{image_ref_block}
+
+{context_block}
+
+WHAT THIS IMAGE MUST COMMUNICATE:
 {style_prompt}
 
-Slot-specific instructions:
+DETAILED REFERENCE:
 {prompt_fragment}
-
-Technical attributes:
-{attributes_text}
 
 {changed_section}
 
-Rules:
-- Keep lighting, angle, and product framing consistent with the HERO image.
-- Do not copy competitor branding or add any logos/text unless generating an infographic.
-- Output a hyperrealistic studio product photo (or professional diagram/infographic style if the reference intent is diagram-based).
-- Premium quality: perfect lighting, sharp details, professional color grading.
+PRODUCT FIDELITY (CRITICAL):
+- The product in this image must be IDENTICAL to Image 1 (HERO) — not just similar, IDENTICAL
+- Same exact shape, silhouette, proportions, surface finish, color, texture, and every visible design detail
+- If the HERO shows a specific tank-to-bowl ratio, button style, handle shape, or base profile — reproduce it EXACTLY
+- DO NOT substitute a generic product shape. The HERO image IS the ground truth for product appearance
+- Common mistakes to AVOID: wrong proportions, generic shapes, missing design details, different hardware
+
+SINGLE PRODUCT RULE:
+- Show EXACTLY ONE product unit in this image — never duplicate, mirror, or show multiple copies of the product
+
+{"LAYOUT MATCHING (CRITICAL):" if reference_intent_image_url else ""}
+{"- Match the EXACT layout structure of Image 2: same number of views/panels, same arrangement, same information hierarchy" if reference_intent_image_url else ""}
+{"- If Image 2 shows 2 views, generate EXACTLY 2 views. If it shows 4 views, generate EXACTLY 4. Count carefully." if reference_intent_image_url else ""}
+{"- Recreate the SAME visual storytelling approach — same composition type, same information flow" if reference_intent_image_url else ""}
+
+ENVIRONMENT CONSISTENCY (NON-NEGOTIABLE):
+- Background environment MUST match the HERO image: same wall material, same wall color, same floor material, same lighting direction
+- NEVER copy the environment/background from Image 2 (competitor) — only copy its PURPOSE and LAYOUT
+- If Image 2 shows a teal wall, colored wall, or any specific setting — IGNORE that setting entirely
+- Use the HERO image's setting as the ONLY environment reference
+- The viewer should feel all images were shot in the same room on the same day
+- {"Serve the SAME PURPOSE as Image 2, but showing the product from Image 1" if reference_intent_image_url else "Follow the slot instructions to create the appropriate catalog image"}
+{hero_env_override}
+
+FUNCTIONAL DIAGRAMS (if applicable):
+- If {"Image 2 shows" if reference_intent_image_url else "this slot requires"} a FUNCTIONAL DIAGRAM (water flow, mechanism cross-section, internal working, flush system, cutaway view):
+  You MUST show the same functional visualization with clear arrows, flow indicators, cross-section views, or cutaway renders that explain HOW the mechanism works
+  The visualization must be technically informative and prominent, not just decorative
+  Use blue/cyan for water flow, directional arrows for movement, labels for key components
+
+TYPOGRAPHY (for images with text/callouts/labels — MUST follow exactly):
+- Font: Thin/light-weight elegant sans-serif (Montserrat Light / Lato Light style) — NOT bold, NOT heavy
+- Headings: UPPERCASE, thin weight, generous letter-spacing, centered symmetrically at top
+- Body/label text: Light weight, same font family, clean and minimal
+- Text color: White or warm off-white (#F5F0E8) on dark overlays; charcoal (#2A2A2A) on light backgrounds
+- Accent color: Warm gold/amber (#C4A265) — use ONLY for thin divider lines, callout connector lines, or subtle highlight borders
+- Callout lines: Thin (1-2px), straight, elegant — connecting product features to their labels
+- Icons: Minimal line-art, monochrome, matching text color — NOT colorful emoji-style, NOT heavy filled icons
+- Layout: SYMMETRIC and balanced — even spacing, centered headings, evenly distributed callouts on left/right
+- This typography MUST match ALL other infographic images in this catalog — identical font, weight, colors, icon style
+
+QUALITY STANDARDS:
+- Hyperrealistic PHOTOGRAPH — NOT an illustration, NOT a 3D render, NOT CGI
+- DSLR-quality depth of field, warm natural lighting
+- Aspect ratio: 1:1 square
+- Amazon A+ listing quality — top 0.01% of product images
+- NO competitor branding, NO watermarks
+- If you lack exact data for text/numbers shown in the reference, use the product attributes provided above — do NOT invent specifications
 """
 
     contents: list = [prompt, _load_image_for_gemini(hero_image_url)]
@@ -780,22 +1017,34 @@ Rules:
 
     last_err = None
     for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
-        try:
-            response = await client.aio.models.generate_content(
-                model=attempt_model,
-                contents=contents,
-                config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
-            )
-            cost = _extract_cost(response, attempt_model)
-            cost["operation"] = "Catalog Image Generation"
+        for img_config in [
+            types.ImageConfig(aspect_ratio="1:1", image_size="2K"),
+            types.ImageConfig(aspect_ratio="1:1"),
+        ]:
+            try:
+                response = await client.aio.models.generate_content(
+                    model=attempt_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=img_config,
+                    ),
+                )
+                cost = _extract_cost(response, attempt_model)
+                cost["operation"] = "Catalog Image Generation"
 
-            ok = _save_generated_image(out_path, response)
-            if not ok:
-                raise RuntimeError("Catalog generation returned no image part")
+                ok = _save_generated_image(out_path, response)
+                if not ok:
+                    raise RuntimeError("Catalog generation returned no image part")
 
-            image_url = f"/outputs/{session_id}/catalog/{image_key}.png"
-            return image_url, cost
-        except Exception as e:
-            last_err = e
+                image_url = f"/outputs/{session_id}/catalog/{image_key}.png"
+                return image_url, cost
+            except Exception as e:
+                err_str = str(e).lower()
+                if "image_size" in err_str or "image size" in err_str:
+                    print(f"[GEMINI] image_size not supported by {attempt_model}, retrying without it")
+                    continue
+                last_err = e
+                break
 
     raise RuntimeError(f"Catalog generation failed: {type(last_err).__name__}: {last_err}")

@@ -236,8 +236,7 @@ function initNavigation() {
         const ok = await submitAnswers();
         if (!ok) return;
         goToStep(4);
-        // Start hero generation right after analysis/answers are saved.
-        generateHeroImage({ regenerate: false });
+        // goToStep(4) already auto-triggers generateHeroImage via the step-4 guard
     });
 
     // Step 4
@@ -828,6 +827,10 @@ function toggleCostDetails() {
 
 // ── API Stubs (Phase 4+) ──
 async function generateHeroImage({ regenerate = false, overrideFile = null } = {}) {
+    // Prevent concurrent hero generation calls (double-fire guard)
+    if (state._heroGenerating) return;
+    state._heroGenerating = true;
+
     const step = 4;
     const btnAccept = document.getElementById('btn-accept-hero');
     const btnRegen = document.getElementById('btn-regenerate-hero');
@@ -884,6 +887,8 @@ async function generateHeroImage({ regenerate = false, overrideFile = null } = {
     } catch (err) {
         showStatus(step, 'Hero generation failed or timed out. Please retry or upload your own hero.', 'error');
         return false;
+    } finally {
+        state._heroGenerating = false;
     }
 }
 
