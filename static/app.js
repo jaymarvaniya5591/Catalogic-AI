@@ -20,6 +20,7 @@ const state = {
     questions: [],
     answers: {},
     selectedSuggestedAdditionIds: [],
+    imageDisplayData: [],
 
     // Step 4
     heroImageUrl: null,
@@ -438,11 +439,9 @@ async function uploadCompetitorImages() {
 
 // ── API: Upload Product Images ──
 async function uploadProductImages() {
-    if (state.productFiles.length === 0) return false;
-
     const btn = document.getElementById('btn-step2-next');
     btn.disabled = true;
-    showStatus(2, 'Uploading your product images...');
+    showStatus(2, state.productFiles.length > 0 ? 'Uploading your product images...' : 'Saving product details...');
 
     const formData = new FormData();
     state.productFiles.forEach(file => formData.append('images', file));
@@ -473,24 +472,21 @@ async function uploadProductImages() {
 async function runAnalysis() {
     // Skip re-run if analysis already exists (user navigated back/forward)
     if (state.analysis) {
-        renderAnalysisResults(state.analysis);
-        renderSuggestedAdditions(state.analysis);
-        renderQuestions(state.questions);
+        renderAttributeBreakdown(state.imageDisplayData);
+        renderSuggestedImages(state.analysis, state.questions);
         validateStep3();
         return;
     }
 
-    showStatus(3, 'Analyzing competitor catalog... this may take 30-60 seconds.');
+    showStatus(3, 'Analyzing competitor catalog and your product images... this may take 30-60 seconds.');
     document.getElementById('btn-step3-next').disabled = true;
-    document.getElementById('analysis-grid').innerHTML =
-        '<div class="placeholder-message"><div class="spinner"></div><p>Analyzing competitor images...</p></div>';
-    document.getElementById('questions-list').innerHTML =
-        '<div class="placeholder-message">Questions will appear after analysis...</div>';
-    const addWrapper = document.getElementById('suggested-additions-wrapper');
-    if (addWrapper) addWrapper.innerHTML = '';
+    document.getElementById('attr-cards').innerHTML =
+        '<div class="placeholder-message"><div class="spinner"></div><p>Analyzing images...</p></div>';
+    const suggestedSection = document.getElementById('suggested-section');
+    if (suggestedSection) suggestedSection.style.display = 'none';
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000);
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
         const res = await fetch('/api/analyze', {
@@ -505,12 +501,12 @@ async function runAnalysis() {
         if (data.success) {
             state.analysis = data.analysis;
             state.questions = data.questions || [];
+            state.imageDisplayData = data.image_display_data || [];
             state.selectedSuggestedAdditionIds = [];
-            renderAnalysisResults(data.analysis);
-            renderSuggestedAdditions(data.analysis);
-            renderQuestions(data.questions || []);
+            renderAttributeBreakdown(state.imageDisplayData);
+            renderSuggestedImages(data.analysis, data.questions);
             if (data.costs) updateCostDisplay(data.costs, data.total_cost_inr);
-            showStatus(3, 'Analysis complete. Answer the questions below or skip for smart defaults.', 'success');
+            showStatus(3, 'Analysis complete. Review and adjust values for your product.', 'success');
             validateStep3();
         } else {
             showStatus(3, data.error || 'Analysis failed. Please try again.', 'error');
@@ -525,91 +521,108 @@ async function runAnalysis() {
     }
 }
 
-// ── Render Analysis Results ──
-function renderAnalysisResults(analysis) {
-    const grid = document.getElementById('analysis-grid');
-    grid.innerHTML = '';
+// ── Render Attribute Breakdown (Step 3 — Section 1) ──
+function renderAttributeBreakdown(imageDisplayData) {
+    const container = document.getElementById('attr-cards');
+    container.innerHTML = '';
 
-    // Show catalog strategy above grid
-    const existingStrategy = document.querySelector('.catalog-strategy');
-    if (existingStrategy) existingStrategy.remove();
+    const cardsData = (imageDisplayData || []).filter(d => d.questions && d.questions.length > 0);
 
-    if (analysis.catalog_strategy) {
-        const strategyEl = document.createElement('p');
-        strategyEl.className = 'catalog-strategy';
-        strategyEl.textContent = analysis.catalog_strategy;
-        grid.parentElement.insertBefore(strategyEl, grid);
+    if (!cardsData.length) {
+        container.innerHTML = '<div class="placeholder-message">No additional details needed — your product images provided everything.</div>';
+        return;
     }
 
-    const images = analysis.images || [];
-    images.forEach(img => {
+    cardsData.forEach(imgData => {
         const card = document.createElement('div');
-        card.className = 'analysis-card';
+        card.className = 'attr-card';
 
-        const imgUrl = state.competitorImages[img.index] || '';
-        card.innerHTML = `
-            <div class="analysis-image">
-                <img src="${imgUrl}" alt="Competitor image ${img.index + 1}" />
+        // Left: image
+        const imageCol = document.createElement('div');
+        imageCol.className = 'attr-card-image';
+        imageCol.innerHTML = `<img src="${imgData.image_url || ''}" alt="Image ${imgData.index + 1}" />`;
+
+        // Right: content
+        const contentCol = document.createElement('div');
+        contentCol.className = 'attr-card-content';
+        contentCol.innerHTML = `
+            <div class="attr-card-header">
+                <span class="attr-card-title">Image ${imgData.index + 1}</span>
+                <span class="intent-badge">${imgData.type || 'other'}</span>
             </div>
-            <div class="analysis-info">
-                <span class="intent-badge">${img.type}</span>
-                <span class="priority-badge priority-${img.priority}">${img.priority}</span>
-                <p class="intent-description">${img.intent}</p>
-            </div>
+            <p class="attr-card-summary">${imgData.summary || ''}</p>
         `;
-        grid.appendChild(card);
+
+        const qContainer = document.createElement('div');
+        qContainer.className = 'attr-questions';
+        imgData.questions.forEach(q => {
+            qContainer.appendChild(makeQuestionRow(q, false));
+        });
+
+        contentCol.appendChild(qContainer);
+        card.appendChild(imageCol);
+        card.appendChild(contentCol);
+        container.appendChild(card);
     });
 }
 
-// ── Suggested Additions Selection (Step 3) ──
-function renderSuggestedAdditions(analysis) {
-    const wrapper = document.getElementById('suggested-additions-wrapper');
-    if (!wrapper) return;
-
+// ── Render Suggested Images (Step 3 — Section 2) ──
+function renderSuggestedImages(analysis, questions) {
+    const section = document.getElementById('suggested-section');
+    const listEl = document.getElementById('suggested-list');
     const additions = analysis?.suggested_additions || [];
-    wrapper.innerHTML = '';
 
     if (!additions.length) {
-        wrapper.style.display = 'none';
+        section.style.display = 'none';
         return;
     }
-    wrapper.style.display = 'block';
+    section.style.display = 'block';
+    listEl.innerHTML = '';
 
-    wrapper.innerHTML = `
-        <div class="catalog-strategy">Suggested additions (choose up to 2 to generate)</div>
-    `;
+    // Group suggested addition questions
+    const suggestedQuestions = new Map();
+    (questions || []).forEach(q => {
+        if (q?.group?.kind === 'suggested_addition') {
+            const aid = q.group.addition_id;
+            if (!suggestedQuestions.has(aid)) suggestedQuestions.set(aid, []);
+            suggestedQuestions.get(aid).push(q);
+        }
+    });
 
     const selectedSet = new Set(state.selectedSuggestedAdditionIds || []);
-    const list = document.createElement('div');
-    list.style.display = 'grid';
-    list.style.gridTemplateColumns = '1fr 1fr';
-    list.style.gap = '12px';
-    list.style.marginTop = '12px';
 
     additions.forEach(add => {
         const id = add.id;
         const checked = selectedSet.has(id);
-        const disabled = !checked && state.selectedSuggestedAdditionIds.length >= 2;
+        const qs = suggestedQuestions.get(id) || [];
 
-        const label = document.createElement('label');
-        label.className = 'choice-option';
-        label.style.cursor = 'pointer';
-        label.style.opacity = disabled ? 0.6 : 1;
+        const card = document.createElement('div');
+        card.className = 'suggested-card' + (checked ? ' selected' : '');
 
-        label.innerHTML = `
-            <input type="checkbox"
-                   id="add_${id}"
-                   class="question-answer"
-                   data-addition-id="${id}"
-                   ${checked ? 'checked' : ''}
-                   ${disabled ? 'disabled' : ''} />
-            <span>
-                <strong style="display:block; color: var(--text-primary); margin-bottom:4px;">${add.title || id}</strong>
-                <span style="color: var(--text-secondary); font-size:12px;">${add.category || ''}</span>
-            </span>
+        // Card header with checkbox
+        const cardHeader = document.createElement('div');
+        cardHeader.className = 'suggested-card-header';
+        cardHeader.innerHTML = `
+            <label class="suggested-check-label">
+                <input type="checkbox" class="suggested-checkbox"
+                       data-addition-id="${id}" ${checked ? 'checked' : ''} />
+                <div class="suggested-card-info">
+                    <strong>${add.title || id}</strong>
+                    <span class="suggested-card-category">${add.category || ''}</span>
+                </div>
+            </label>
         `;
 
-        const checkbox = label.querySelector('input[type="checkbox"]');
+        // Questions body (smooth expand/collapse)
+        const cardBody = document.createElement('div');
+        cardBody.className = 'suggested-card-body';
+
+        qs.forEach(q => {
+            cardBody.appendChild(makeQuestionRow(q, !checked));
+        });
+
+        // Checkbox change handler
+        const checkbox = cardHeader.querySelector('.suggested-checkbox');
         checkbox.addEventListener('change', () => {
             if (checkbox.checked) {
                 if (state.selectedSuggestedAdditionIds.length >= 2 && !state.selectedSuggestedAdditionIds.includes(id)) {
@@ -623,178 +636,91 @@ function renderSuggestedAdditions(analysis) {
             } else {
                 state.selectedSuggestedAdditionIds = state.selectedSuggestedAdditionIds.filter(x => x !== id);
             }
-
-            // Re-render questions with updated selection
-            renderSuggestedAdditions(analysis);
-            renderQuestions(state.questions);
+            // Re-render this section
+            renderSuggestedImages(analysis, questions);
         });
 
-        list.appendChild(label);
-    });
+        card.appendChild(cardHeader);
+        if (qs.length) card.appendChild(cardBody);
+        listEl.appendChild(card);
 
-    wrapper.appendChild(list);
+        // Animate open after render
+        if (checked && qs.length) {
+            requestAnimationFrame(() => {
+                cardBody.style.maxHeight = cardBody.scrollHeight + 'px';
+                cardBody.style.paddingTop = '12px';
+                cardBody.style.paddingBottom = '16px';
+            });
+        }
+    });
 }
 
-// ── Render Smart Questions ──
-function renderQuestions(questions) {
-    const list = document.getElementById('questions-list');
-    list.innerHTML = '';
+// ── Question Row Builder (shared by attr breakdown + suggested) ──
+function makeQuestionRow(q, disabledForSelection) {
+    const row = document.createElement('div');
+    row.className = 'q-row';
+    row.dataset.questionId = q.id;
 
-    if (!questions || !questions.length) {
-        list.innerHTML = '<div class="placeholder-message">No additional questions needed.</div>';
-        return;
+    const defaultValue = q.default_value || 'Standard premium quality';
+    const disabledAttr = disabledForSelection ? 'disabled' : '';
+
+    // Label side
+    let labelHTML = `<div class="q-row-label">
+        <div>${q.text}</div>
+        ${q.context ? `<div class="q-row-context">${q.context}</div>` : ''}
+    </div>`;
+
+    // Input side
+    let inputHTML = '';
+    if (q.type === 'choice' && q.options) {
+        const pillsHTML = q.options.map(opt => {
+            const isDefault = opt === defaultValue;
+            return `<label class="pill-option${isDefault ? ' selected' : ''}${disabledForSelection ? ' disabled' : ''}">
+                <input type="radio" name="q_${q.id}" value="${opt}"
+                       class="question-answer" data-qid="${q.id}"
+                       ${isDefault ? 'checked' : ''} ${disabledAttr} />
+                ${opt}
+            </label>`;
+        }).join('');
+        inputHTML = `<div class="q-row-input"><div class="pill-group">${pillsHTML}</div></div>`;
+    } else if (q.type === 'image') {
+        inputHTML = `<div class="q-row-input">
+            <label class="btn btn-secondary btn-small"
+                   style="cursor:${disabledForSelection ? 'not-allowed' : 'pointer'}; opacity:${disabledForSelection ? 0.6 : 1};">
+                Upload
+                <input type="file" accept="image/*"
+                       class="question-answer" data-qid="${q.id}"
+                       ${disabledAttr} hidden
+                       onchange="handleQuestionImage(this, '${q.id}')" />
+            </label>
+            <span class="question-image-name" id="qimg-${q.id}"></span>
+        </div>`;
+    } else {
+        inputHTML = `<div class="q-row-input">
+            <input type="text" class="text-input question-answer"
+                   data-qid="${q.id}"
+                   placeholder="${defaultValue}"
+                   ${disabledAttr} />
+        </div>`;
     }
 
-    const selectedSet = new Set(state.selectedSuggestedAdditionIds || []);
+    row.innerHTML = labelHTML + inputHTML;
 
-    // Group questions
-    const competitorGroups = new Map(); // image_index -> questions[]
-    const suggestedGroups = new Map(); // addition_id -> questions[]
+    // Pill click handlers
+    if (q.type === 'choice' && q.options && !disabledForSelection) {
+        row.querySelectorAll('.pill-option').forEach(pill => {
+            pill.addEventListener('click', () => {
+                row.querySelectorAll('.pill-option').forEach(p => p.classList.remove('selected'));
+                pill.classList.add('selected');
+                pill.querySelector('input').checked = true;
+            });
+        });
+    }
 
-    questions.forEach(q => {
-        if (!q?.group) return;
-        if (q.group.kind === 'competitor_image') {
-            const idx = q.group.image_index;
-            if (!competitorGroups.has(idx)) competitorGroups.set(idx, []);
-            competitorGroups.get(idx).push(q);
-        } else if (q.group.kind === 'suggested_addition') {
-            const aid = q.group.addition_id;
-            if (!suggestedGroups.has(aid)) suggestedGroups.set(aid, []);
-            suggestedGroups.get(aid).push(q);
-        }
-    });
-
-    const makeQuestionCard = (q, disabledForSelection) => {
-        const card = document.createElement('div');
-        card.className = 'question-card' + (disabledForSelection ? ' skipped' : '');
-        card.dataset.questionId = q.id;
-
-        const defaultValue = q.default_value || 'Standard premium quality';
-        const disabledAttr = disabledForSelection ? 'disabled' : '';
-        const skipBtnDisabled = disabledForSelection ? 'disabled' : '';
-
-        let inputHTML = '';
-        if (q.type === 'choice' && q.options) {
-            const optionsHTML = q.options.map(opt =>
-                `<label class="choice-option">
-                    <input type="radio" name="q_${q.id}" value="${opt}"
-                           class="question-answer" data-qid="${q.id}" ${disabledAttr} />
-                    <span>${opt}</span>
-                </label>`
-            ).join('');
-
-            inputHTML = `
-                <div class="question-choices">${optionsHTML}</div>
-                <button class="btn btn-skip" ${skipBtnDisabled}
-                        onclick="skipQuestion('${q.id}', this)">
-                    ${disabledForSelection ? 'Skipped' : 'Skip'}
-                </button>
-            `;
-        } else if (q.type === 'image') {
-            inputHTML = `
-                <div class="question-input">
-                    <label class="btn btn-secondary btn-small"
-                           style="cursor:${disabledForSelection ? 'not-allowed' : 'pointer'}; opacity:${disabledForSelection ? 0.6 : 1};">
-                        Upload Image
-                        <input type="file" accept="image/*"
-                               class="question-answer"
-                               data-qid="${q.id}"
-                               ${disabledAttr}
-                               hidden
-                               onchange="handleQuestionImage(this, '${q.id}')" />
-                    </label>
-                    <span class="question-image-name" id="qimg-${q.id}"></span>
-                    <button class="btn btn-skip" ${skipBtnDisabled}
-                            onclick="skipQuestion('${q.id}', this)">
-                        ${disabledForSelection ? 'Skipped' : 'Skip'}
-                    </button>
-                </div>
-            `;
-        } else {
-            inputHTML = `
-                <div class="question-input">
-                    <input type="text" class="text-input question-answer"
-                           data-qid="${q.id}"
-                           placeholder="${defaultValue}"
-                           ${disabledAttr} />
-                    <button class="btn btn-skip" ${skipBtnDisabled}
-                            onclick="skipQuestion('${q.id}', this)">
-                        ${disabledForSelection ? 'Skipped' : 'Skip'}
-                    </button>
-                </div>
-            `;
-        }
-
-        card.innerHTML = `
-            <p class="question-text">${q.text}</p>
-            ${q.context ? `<p class="question-context">${q.context}</p>` : ''}
-            ${inputHTML}
-            <p class="question-default" id="default-${q.id}" style="display:${disabledForSelection ? 'block' : 'none'};">
-                Using default: <em>${defaultValue}</em>
-            </p>
-        `;
-
-        return card;
-    };
-
-    // 1) Competitor image groups
-    const competitorIndices = Array.from(competitorGroups.keys()).sort((a, b) => a - b);
-    competitorIndices.forEach(idx => {
-        const header = document.createElement('div');
-        header.className = 'analysis-card';
-        header.style.padding = '16px';
-        header.style.marginTop = '16px';
-        const imgUrl = state.competitorImages[idx] || '';
-        header.innerHTML = `
-            <div style="display:flex; gap:16px; align-items:center;">
-                <div style="width:140px; flex:0 0 auto;" class="analysis-image">
-                    <img src="${imgUrl}" alt="Competitor image ${idx + 1}" style="width:100%; height:100%; object-fit:cover;" />
-                </div>
-                <div>
-                    <h4 class="section-subtitle" style="margin-top:0;">Competitor Image ${parseInt(idx) + 1}</h4>
-                    <p class="section-hint" style="margin-top:6px;">Confirm the technical/spec info shown in this image.</p>
-                </div>
-            </div>
-        `;
-        list.appendChild(header);
-
-        (competitorGroups.get(idx) || []).forEach(q => list.appendChild(makeQuestionCard(q, false)));
-    });
-
-    // 2) Suggested additions (questions disabled unless selected)
-    const additions = state.analysis?.suggested_additions || [];
-    additions.forEach(add => {
-        const aid = add.id;
-        const qs = suggestedGroups.get(aid) || [];
-        if (!qs.length) return;
-
-        const selected = selectedSet.has(aid);
-        const group = document.createElement('div');
-        group.className = 'analysis-card';
-        group.style.padding = '16px';
-        group.style.marginTop = '16px';
-        group.innerHTML = `
-            <h4 class="section-subtitle" style="margin-top:0;">Suggested Addition: ${add.title || aid}</h4>
-            <p class="section-hint">${selected ? 'This will be generated.' : 'Not selected. Defaults will be used.'}</p>
-        `;
-        list.appendChild(group);
-
-        qs.forEach(q => list.appendChild(makeQuestionCard(q, !selected)));
-    });
+    return row;
 }
 
 // ── Question Helpers ──
-function skipQuestion(qid, btn) {
-    state.answers[qid] = null; // null = use default
-    const card = btn.closest('.question-card');
-    card.classList.add('skipped');
-    document.getElementById(`default-${qid}`).style.display = 'block';
-    card.querySelectorAll('.question-answer').forEach(i => i.disabled = true);
-    btn.textContent = 'Skipped';
-    btn.disabled = true;
-    validateStep3();
-}
-
 function handleQuestionImage(input, qid) {
     if (input.files.length > 0) {
         state.answers[qid] = input.files[0];
@@ -943,12 +869,13 @@ async function generateHeroImage({ regenerate = false, overrideFile = null } = {
         state.heroImageUrl = data.hero_image_url;
 
         if (imgEl) {
-            imgEl.src = state.heroImageUrl;
+            imgEl.src = state.heroImageUrl + '?t=' + Date.now();
             imgEl.style.display = 'block';
         }
         if (actions) actions.style.display = 'flex';
         if (placeholder) placeholder.style.display = 'none';
 
+        if (data.costs) updateCostDisplay(data.costs, data.total_cost_inr);
         showStatus(step, 'Hero image ready. Review and click Accept to continue.', 'success');
         if (btnAccept) btnAccept.disabled = false;
         if (btnRegen) btnRegen.disabled = false;
@@ -1048,6 +975,7 @@ function startCatalogGeneration() {
 
         if (data.status === 'success') {
             renderCard(data.key, data.image_url, 'success');
+            if (data.cost) updateCostDisplay([data.cost], null);
         } else {
             renderCard(data.key, null, data.status || 'failed', data.error);
         }

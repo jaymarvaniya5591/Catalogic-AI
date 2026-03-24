@@ -153,25 +153,21 @@
         <!-- ═══════════════════════════════════════════ -->
         <section class="step-section" id="step-3">
             <div class="step-card">
-                <h2>Deep Analysis</h2>
-                <p class="step-description">Here's what we found in the competitor's catalog. Answer the questions below to improve your results, or skip any for smart defaults.</p>
+                <h2>Review & Customize</h2>
+                <p class="step-description">We extracted details from the competitor catalog. Adjust anything that should differ for your product.</p>
 
-                <!-- Analysis results -->
-                <div class="analysis-section" id="analysis-results">
-                    <h3 class="section-subtitle">Competitor Catalog Breakdown</h3>
-                    <div class="analysis-grid" id="analysis-grid">
-                        <div class="placeholder-message">Analysis results will appear here...</div>
+                <!-- Section 1: Attribute Breakdown -->
+                <div class="attr-breakdown" id="attr-breakdown">
+                    <div class="section-label">Attribute Breakdown</div>
+                    <div id="attr-cards" class="attr-cards">
+                        <div class="placeholder-message"><div class="spinner"></div><p>Analyzing images...</p></div>
                     </div>
                 </div>
 
-                <!-- Smart questions -->
-                <div class="questions-section" id="questions-section">
-                    <h3 class="section-subtitle">Smart Questions</h3>
-                    <p class="section-hint">Answer to improve quality, or skip for intelligent defaults.</p>
-                    <div id="suggested-additions-wrapper"></div>
-                    <div class="questions-list" id="questions-list">
-                        <div class="placeholder-message">Questions will appear after analysis...</div>
-                    </div>
+                <!-- Section 2: Suggested Images -->
+                <div class="suggested-section" id="suggested-section" style="display:none;">
+                    <div class="section-label">Suggested Images <span class="section-label-hint">Select up to 2</span></div>
+                    <div id="suggested-list" class="suggested-list"></div>
                 </div>
 
                 <!-- Status -->

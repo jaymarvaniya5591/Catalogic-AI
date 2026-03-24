@@ -408,48 +408,23 @@ body {
 }
 
 /* ── Analysis Section (Step 3) ── */
-.section-subtitle {
-    font-size: 14px;
+.section-label {
+    font-size: 11px;
     font-weight: 600;
+    letter-spacing: 2px;
     text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-secondary);
+    color: var(--accent-gold);
     margin-bottom: 16px;
-    margin-top: 24px;
+    margin-top: 28px;
 }
 
-.section-hint {
-    font-size: 13px;
+.section-label-hint {
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
     color: var(--text-muted);
-    margin-bottom: 16px;
-}
-
-.analysis-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-}
-
-.analysis-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-}
-
-.analysis-image {
-    aspect-ratio: 4/3;
-    overflow: hidden;
-}
-
-.analysis-image img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.analysis-info {
-    padding: 12px;
+    margin-left: 8px;
+    font-size: 11px;
 }
 
 .intent-badge {
@@ -464,118 +439,168 @@ body {
     border-radius: 10px;
 }
 
-.intent-description {
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin-top: 6px;
-}
-
-/* ── Questions (Step 3) ── */
-.questions-list {
+/* ── Attribute Breakdown (Step 3 — Section 1) ── */
+.attr-cards {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
 }
 
-.question-card {
+.attr-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 16px;
-}
-
-.question-text {
-    font-size: 14px;
-    color: var(--text-primary);
-    margin-bottom: 10px;
-}
-
-.question-input {
+    padding: 20px;
     display: flex;
-    gap: 10px;
-    align-items: center;
+    gap: 20px;
+    align-items: flex-start;
 }
 
-.question-input .text-input {
-    flex: 1;
-}
-
-.btn-skip {
-    background: transparent;
+.attr-card-image {
+    width: 120px;
+    height: 120px;
+    border-radius: 8px;
+    overflow: hidden;
+    flex-shrink: 0;
     border: 1px solid var(--border);
-    color: var(--text-muted);
-    padding: 6px 14px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 12px;
-    transition: all var(--transition);
-    white-space: nowrap;
 }
 
-.btn-skip:hover {
-    border-color: var(--accent-gold);
-    color: var(--accent-gold);
+.attr-card-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
-.btn-skip:disabled {
-    opacity: 0.5;
-    cursor: default;
+.attr-card-content {
+    flex: 1;
+    min-width: 0;
 }
 
-.catalog-strategy {
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin-bottom: 16px;
-    padding: 12px;
-    background: var(--accent-gold-dim);
-    border-radius: var(--radius-sm);
-    border-left: 3px solid var(--accent-gold);
-}
-
-.question-context {
-    font-size: 12px;
-    color: var(--text-muted);
-    margin-bottom: 10px;
-}
-
-.question-default {
-    font-size: 12px;
-    color: var(--accent-gold);
-    margin-top: 8px;
-}
-
-.question-card.skipped {
-    opacity: 0.6;
-    border-color: var(--border);
-}
-
-.question-choices {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-bottom: 8px;
-}
-
-.choice-option {
+.attr-card-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
+    margin-bottom: 4px;
+}
+
+.attr-card-title {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.attr-card-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.attr-questions {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* ── Question Rows (inline, slim) ── */
+.q-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.q-row-label {
+    flex: 1;
     font-size: 13px;
     color: var(--text-primary);
-    transition: border-color var(--transition);
+    line-height: 1.5;
+    padding-top: 6px;
 }
 
-.choice-option:hover {
+.q-row-context {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    line-height: 1.4;
+}
+
+.q-row-input {
+    flex: 0 0 220px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.q-row-input .text-input {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 13px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    transition: all var(--transition);
+}
+
+.q-row-input .text-input:focus {
+    background: var(--bg-input);
     border-color: var(--accent-gold);
+    outline: none;
 }
 
-.choice-option input[type="radio"] {
-    accent-color: var(--accent-gold);
+.q-row-input .text-input::placeholder {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* ── Pill Selectors (replace radio buttons) ── */
+.pill-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.pill-option {
+    padding: 6px 14px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition);
+    user-select: none;
+}
+
+.pill-option:hover {
+    border-color: var(--accent-gold);
+    color: var(--text-primary);
+}
+
+.pill-option.selected {
+    border-color: var(--accent-gold);
+    background: var(--accent-gold-dim);
+    color: var(--accent-gold);
+    font-weight: 500;
+}
+
+.pill-option input[type="radio"] {
+    display: none;
+}
+
+.pill-option.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* ── Image upload in q-row ── */
+.q-row-input .btn-small {
+    white-space: nowrap;
 }
 
 .question-image-name {
@@ -583,30 +608,98 @@ body {
     color: var(--text-secondary);
 }
 
-.priority-badge {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    padding: 2px 6px;
-    border-radius: 8px;
-    margin-left: 4px;
+/* ── Suggested Images (Step 3 — Section 2) ── */
+.suggested-section {
+    margin-top: 28px;
 }
 
-.priority-high {
-    background: rgba(200, 80, 80, 0.15);
-    color: #c85050;
+.suggested-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.priority-medium {
-    background: rgba(200, 160, 60, 0.15);
-    color: #c8a03c;
+.suggested-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color var(--transition);
 }
 
-.priority-low {
-    background: rgba(80, 160, 80, 0.15);
-    color: #50a050;
+.suggested-card.selected {
+    border-color: var(--accent-gold);
+}
+
+.suggested-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+}
+
+.suggested-check-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    flex: 1;
+}
+
+.suggested-checkbox {
+    accent-color: var(--accent-gold);
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+.suggested-card-info strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 14px;
+    margin-bottom: 2px;
+}
+
+.suggested-card-category {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.suggested-card-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease, padding 0.3s ease;
+    padding: 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.suggested-card.selected .suggested-card-body {
+    border-top: 1px solid var(--border);
+}
+
+/* ── Responsive (Step 3) ── */
+@media (max-width: 640px) {
+    .attr-card {
+        flex-direction: column;
+    }
+    .attr-card-image {
+        width: 100%;
+        height: 160px;
+    }
+    .q-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+    .q-row-input {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+    .q-row-label {
+        padding-top: 0;
+    }
 }
 
 /* ── Hero Image (Step 4) ── */
@@ -897,6 +990,20 @@ body {
 
     .analysis-grid {
         grid-template-columns: 1fr;
+    }
+
+    .accordion-thumb {
+        width: 56px;
+        height: 56px;
+    }
+
+    .accordion-header {
+        gap: 12px;
+        padding: 12px;
+    }
+
+    .accordion-body {
+        padding: 4px 12px 12px;
     }
 
     .catalog-grid {

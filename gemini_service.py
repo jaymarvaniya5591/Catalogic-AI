@@ -3,6 +3,7 @@ Gemini AI service — catalog analysis, gap detection, smart questions.
 Uses the google-genai SDK (NOT the deprecated google-generativeai).
 """
 
+import asyncio
 import json
 import time
 import re
@@ -10,10 +11,12 @@ from pathlib import Path
 from io import BytesIO
 
 from PIL import Image
+from typing import List, Optional, Literal
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY, MODEL_ANALYSIS, PRICING, USD_TO_INR
+from config import GEMINI_API_KEY, MODEL_ANALYSIS, MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK, PRICING, USD_TO_INR
 
 # ── Lazy Client (avoids crash if key is empty at import time) ──
 
@@ -80,11 +83,36 @@ def _resize_image(image_bytes: bytes, mime_type: str) -> bytes:
 
 
 def _parse_json_response(text: str):
-    """Parse JSON from Gemini response, stripping markdown fences if present."""
+    """Parse JSON from Gemini response, stripping markdown fences and handling extra text."""
     cleaned = text.strip()
     # Strip ```json ... ``` wrapper
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    start_brace = cleaned.find('{')
+    start_bracket = cleaned.find('[')
+    end_brace = cleaned.rfind('}')
+    end_bracket = cleaned.rfind(']')
+
+    start_idx = -1
+    if start_brace != -1 and start_bracket != -1:
+        start_idx = min(start_brace, start_bracket)
+    elif start_brace != -1:
+        start_idx = start_brace
+    elif start_bracket != -1:
+        start_idx = start_bracket
+
+    end_idx = -1
+    if end_brace != -1 and end_bracket != -1:
+        end_idx = max(end_brace, end_bracket)
+    elif end_brace != -1:
+        end_idx = end_brace
+    elif end_bracket != -1:
+        end_idx = end_bracket
+
+    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+        cleaned = cleaned[start_idx:end_idx+1]
+
     return json.loads(cleaned)
 
 
@@ -117,9 +145,51 @@ def _extract_cost(response, model_name: str) -> dict:
     return cost_info
 
 
+class Claim(BaseModel):
+    attribute_id: str
+    label: str
+    value: str
+    answer_type: Literal["text", "choice", "image"]
+    options: Optional[List[str]] = None
+    confidence: float
+    evidence_text: str
+
+class ImageAnalysis(BaseModel):
+    index: int
+    type: str
+    intent: str
+    summary: str
+    key_elements: List[str]
+    priority: str
+    style_prompt: str
+    visible_text_snippets: List[str]
+    claims: List[Claim]
+
+class RequiredClaim(BaseModel):
+    attribute_id: str
+    label: str
+    value: str
+    answer_type: Literal["text", "choice", "image"]
+    options: Optional[List[str]] = None
+    confidence: float
+    evidence_text: str
+
+class SuggestedAddition(BaseModel):
+    id: str
+    title: str
+    category: str
+    required_claims: List[RequiredClaim]
+    generation_prompt_fragment: str
+
+class CatalogAnalysisResponse(BaseModel):
+    images: List[ImageAnalysis]
+    catalog_strategy: str
+    recommended_order: List[int]
+    suggested_additions: List[SuggestedAddition]
+
 # ── Function 1: Analyze Competitor Catalog ──
 
-def analyze_competitor_catalog(images: list[str], description: str) -> tuple[dict, dict]:
+async def analyze_competitor_catalog(images: list[str], description: str) -> tuple[dict, dict]:
     """
     Send all competitor images + description to Gemini.
     Returns (analysis_result, cost_info).
@@ -138,9 +208,10 @@ Task A — Per-image catalog intent & style:
 For each image (numbered 0 through {n - 1}), identify:
 1. "type": The image category. Must be one of: "hero", "lifestyle", "closeup", "dimensions", "infographic", "comparison", "packaging", "installation", "features", "brand", "other"
 2. "intent": A short description (1-2 sentences) of what this image communicates to the buyer
-3. "key_elements": List of visual elements present (e.g. ["bathroom setting", "marble countertop", "warm lighting"])
-4. "priority": "high", "medium", or "low" — how important this image type is for a catalog
-5. "style_prompt": A short reusable prompt fragment (1-2 sentences) describing the visual style/messages for this image type (NOT the actual product specs).
+3. "summary": A detailed 2-3 sentence summary of EVERYTHING visible in this image — exact product color/finish, all text (OCR), every specification, every measurement, every diagram element, every label, every callout, background/setting details. Describe with maximum detail.
+4. "key_elements": List of visual elements present (e.g. ["bathroom setting", "marble countertop", "warm lighting"])
+5. "priority": "high", "medium", or "low" — how important this image type is for a catalog
+6. "style_prompt": A short reusable prompt fragment (1-2 sentences) describing the visual style/messages for this image type (NOT the actual product specs).
 
 Task B — OCR-style extraction + factual product claims visible in each image:
 From each image, do two things:
@@ -160,7 +231,7 @@ For each extracted claim output:
 Only output claims with confidence >= 0.25. If text exists but you're unsure, still output a claim with lower confidence and best-effort value.
 
 Task C — Suggested missing images (additions):
-Study all images + the provided product description and infer whether there are vital catalog messages missing from the competitor images.
+Study all images + the full provided product description text and infer whether there are vital catalog messages missing from the competitor images. Use the scraped text AND the complete pool of info from all images to identify at most 2 meaningful images the competitor didn't cover that would be important for a complete, premium A+ grade catalog listing.
 You may suggest up to 2 additions.
 Each suggested addition must include:
 - "id", "title", "category"
@@ -174,6 +245,7 @@ Return valid JSON with this exact structure:
       "index": 0,
       "type": "...",
       "intent": "...",
+      "summary": "...",
       "key_elements": [...],
       "priority": "...",
       "style_prompt": "...",
@@ -226,21 +298,24 @@ Return valid JSON with this exact structure:
     # Retry once on failure
     for attempt in range(2):
         try:
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=MODEL_ANALYSIS,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
+                    response_schema=CatalogAnalysisResponse,
                 ),
             )
             result = _parse_json_response(response.text)
             cost = _extract_cost(response, MODEL_ANALYSIS)
             cost["operation"] = "Catalog Analysis"
             return result, cost
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             print(f"[GEMINI] analyze attempt {attempt + 1} failed: {e}")
             if attempt == 0:
-                time.sleep(2)
+                await asyncio.sleep(2)
 
     # Fallback: return generic structure (no claims / no additions)
     fallback = {
@@ -249,6 +324,7 @@ Return valid JSON with this exact structure:
                 "index": i,
                 "type": "other",
                 "intent": "Could not analyze",
+                "summary": "",
                 "key_elements": [],
                 "priority": "medium",
                 "style_prompt": "",
@@ -262,6 +338,115 @@ Return valid JSON with this exact structure:
         "suggested_additions": [],
     }
     return fallback, {"model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0, "cost_inr": 0, "operation": "Catalog Analysis"}
+
+
+# ── Function 1b: Analyze User Product Images ──
+
+class UserExtractedAttribute(BaseModel):
+    attribute_id: str
+    value: str
+    confidence: float
+    evidence_text: str
+
+class UserImageSummary(BaseModel):
+    index: int
+    description: str
+    detected_text: List[str]
+
+class UserImageAnalysisResponse(BaseModel):
+    extracted_attributes: List[UserExtractedAttribute]
+    image_summaries: List[UserImageSummary]
+
+CANONICAL_ATTRIBUTE_IDS = (
+    "flush_system_type, trap_outlet_type, s_trap_or_p_trap, rough_in_inches, "
+    "rim_type, bumper_design, dimensions, material_finish, flush_method, "
+    "water_tank_compatibility, seat_close_type, product_color, product_weight, "
+    "warranty_years, certification, water_consumption_lpf, bowl_shape, "
+    "installation_type, pipe_size, glazing_type"
+)
+
+async def analyze_user_product_images(
+    images: list[str],
+    product_description: str,
+) -> tuple[dict, dict]:
+    """
+    Analyze user's own product images via Gemini to extract attributes already visible.
+    Returns (user_analysis_dict, cost_info).
+    """
+    if not images:
+        return {"extracted_attributes": [], "image_summaries": []}, {
+            "model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0,
+            "cost_usd": 0, "cost_inr": 0, "operation": "User Image Analysis",
+        }
+
+    n = len(images)
+    client = get_client()
+
+    prompt = f"""You are analyzing {n} product images uploaded by the user (the product owner, NOT a competitor).
+
+Your goal is to extract ALL factual information visible in these images about the product.
+
+Product description from user:
+{product_description}
+
+For EACH image, examine with maximum detail:
+- Exact product color and finish (e.g., glossy white, matte black, ivory)
+- All text visible via OCR (labels, specifications, dimensions, model numbers)
+- Any dimension diagrams or measurements (height, width, depth, rough-in distance)
+- Material appearance (ceramic, porcelain, etc.)
+- Product features visible (rimless, soft-close seat, trap type, flush mechanism)
+- Installation details, packaging info, certifications
+
+Return structured JSON with:
+
+1. "extracted_attributes": A list of all product attributes you can confidently extract.
+   Use these canonical attribute_ids where applicable: {CANONICAL_ATTRIBUTE_IDS}
+   Each attribute:
+   - "attribute_id": snake_case id (use canonical ids above when possible)
+   - "value": the extracted value
+   - "confidence": 0-1 (how confident you are)
+   - "evidence_text": brief quote/description of what you see (max 20 words)
+   Only include attributes with confidence >= 0.2.
+
+2. "image_summaries": For each image (indexed 0 to {n - 1}):
+   - "index": image index
+   - "description": Detailed description of everything visible in this image
+   - "detected_text": List of all text strings detected via OCR
+
+Return valid JSON matching this structure exactly."""
+
+    contents: list = [prompt]
+    for img_path in images[:5]:
+        try:
+            contents.append(_load_image_for_gemini(img_path))
+        except FileNotFoundError as e:
+            print(f"[GEMINI] Skipping missing user image: {e}")
+
+    for attempt in range(2):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_ANALYSIS,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=UserImageAnalysisResponse,
+                ),
+            )
+            result = _parse_json_response(response.text)
+            cost = _extract_cost(response, MODEL_ANALYSIS)
+            cost["operation"] = "User Image Analysis"
+            return result, cost
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[GEMINI] user image analysis attempt {attempt + 1} failed: {e}")
+            if attempt == 0:
+                await asyncio.sleep(2)
+
+    return {"extracted_attributes": [], "image_summaries": []}, {
+        "model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0,
+        "cost_usd": 0, "cost_inr": 0, "operation": "User Image Analysis",
+    }
 
 
 # ── Function 2: Detect Information Gaps (rule-based) ──
@@ -335,9 +520,17 @@ def detect_information_gaps(
     return gaps
 
 
+class Question(BaseModel):
+    id: str
+    text: str
+    type: Literal["text", "choice", "image"]
+    options: Optional[List[str]] = None
+    default_value: str
+    context: str
+
 # ── Function 3: Generate Smart Questions ──
 
-def generate_smart_questions(gaps: list[dict], analysis: dict) -> tuple[list[dict], dict]:
+async def generate_smart_questions(gaps: list[dict], analysis: dict) -> tuple[list[dict], dict]:
     """
     Turn information gaps into user-friendly questions with intelligent defaults.
     Returns (questions_list, cost_info).
@@ -375,11 +568,12 @@ Return a valid JSON array of question objects."""
 
     for attempt in range(2):
         try:
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=MODEL_ANALYSIS,
                 contents=[prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
+                    response_schema=list[Question],
                 ),
             )
             cost = _extract_cost(response, MODEL_ANALYSIS)
@@ -392,10 +586,12 @@ Return a valid JSON array of question objects."""
             if isinstance(questions, dict) and "questions" in questions:
                 return questions["questions"], cost
             return [], cost
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             print(f"[GEMINI] questions attempt {attempt + 1} failed: {e}")
             if attempt == 0:
-                time.sleep(2)
+                await asyncio.sleep(2)
 
     # Fallback: generate basic questions from gaps
     fallback = []
@@ -463,7 +659,7 @@ def _collect_answer_image_parts(compiled_attributes: dict) -> list[types.Part]:
     return parts
 
 
-def generate_hero_image(
+async def generate_hero_image(
     session_id: str,
     product_images: list[str],
     product_description: str,
@@ -478,11 +674,13 @@ def generate_hero_image(
 
     reference_images = (product_images or [])[:3]
 
-    prompt = f"""Create a premium white-background studio HERO product image for Ruva sanitaryware (toilet/WC).
+    prompt = f"""Create a hyperrealistic, premium, high-resolution studio HERO product image for Ruva sanitaryware (toilet/WC).
+This must be Amazon A+ grade listing quality — top 0.01% of product listings in this category.
 
 Reference the provided product images for the exact shape, proportions, and visible design details.
-Use a clean seamless white background, soft diffused lighting, minimal shadows, and a centered composition
-with a subtle 3/4 angle. Ensure no text, no competitor branding, and no watermark.
+Use a clean seamless white background, perfect studio lighting with soft diffused shadows, and a centered composition
+with a subtle 3/4 angle. Use your knowledge of premium product photography: perfect reflections, subtle gradient lighting, professional composition.
+Ensure no text, no competitor branding, and no watermark.
 
 Technical attributes to match (specs/feature values):
 {_attributes_to_text(compiled_attributes)}
@@ -500,7 +698,7 @@ Product description context:
     last_err = None
     for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
         try:
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=attempt_model,
                 contents=contents,
                 config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
@@ -520,7 +718,7 @@ Product description context:
     raise RuntimeError(f"Hero generation failed: {type(last_err).__name__}: {last_err}")
 
 
-def generate_catalog_image(
+async def generate_catalog_image(
     session_id: str,
     image_key: str,
     hero_image_url: str,
@@ -528,6 +726,7 @@ def generate_catalog_image(
     style_prompt: str,
     prompt_fragment: str,
     compiled_attributes: dict,
+    changed_attributes: dict | None = None,
 ) -> tuple[str, dict]:
     """
     Generate a catalog image and save it under outputs/{session_id}/catalog/{image_key}.png.
@@ -538,11 +737,22 @@ def generate_catalog_image(
 
     attributes_text = _attributes_to_text(compiled_attributes)
 
-    prompt = f"""You are generating an e-commerce catalog image for Ruva.
+    changed_section = ""
+    if changed_attributes:
+        changed_lines = [f"- {k}: {v}" for k, v in changed_attributes.items()]
+        changed_section = f"""
+IMPORTANT — The following attributes DIFFER from the competitor image and must be reflected in the generated image:
+{chr(10).join(changed_lines)}
+For all other attributes, match the competitor image's approach and visual style."""
+    else:
+        changed_section = "Match all attributes from the competitor image's approach, using this product's appearance from the HERO image."
+
+    prompt = f"""You are generating a hyperrealistic, premium, Amazon A+ grade catalog image for Ruva.
+This must be top 0.01% listing quality. Use your knowledge of premium typography, layout design, and professional product photography.
 
 Goal:
 Recreate the competitor (or inferred) image INTENT and visual messaging for this catalog slot
-while using the provided HERO image as the visual anchor.
+while using the provided HERO image as the visual anchor for product appearance.
 
 Style cues:
 {style_prompt}
@@ -550,13 +760,16 @@ Style cues:
 Slot-specific instructions:
 {prompt_fragment}
 
-Technical attributes to match:
+Technical attributes:
 {attributes_text}
+
+{changed_section}
 
 Rules:
 - Keep lighting, angle, and product framing consistent with the HERO image.
-- Do not copy competitor branding or add any logos/text.
-- Output a realistic studio product photo (or diagram style only if the reference intent is diagram-based).
+- Do not copy competitor branding or add any logos/text unless generating an infographic.
+- Output a hyperrealistic studio product photo (or professional diagram/infographic style if the reference intent is diagram-based).
+- Premium quality: perfect lighting, sharp details, professional color grading.
 """
 
     contents: list = [prompt, _load_image_for_gemini(hero_image_url)]
@@ -568,7 +781,7 @@ Rules:
     last_err = None
     for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
         try:
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=attempt_model,
                 contents=contents,
                 config=types.GenerateContentConfig(response_modalities=["IMAGE"]),

@@ -13,6 +13,7 @@ from config import UPLOAD_DIR, OUTPUT_DIR
 from scraper import scrape_product_url
 from gemini_service import (
     analyze_competitor_catalog,
+    analyze_user_product_images,
     generate_hero_image,
     generate_catalog_image,
 )
@@ -84,6 +85,41 @@ async def save_upload_files(
 
 COMPETITOR_IMAGE_CAP = 12
 
+# Attribute family mapping: related attribute IDs grouped so that knowing
+# any member suppresses questions about the entire family.
+ATTRIBUTE_FAMILIES: dict[str, list[str]] = {
+    "dimensions": [
+        "dimensions", "total_height", "total_depth", "bowl_height",
+        "product_dimensions", "max_outer_width", "base_width",
+        "bowl_depth", "seat_height", "overall_length", "overall_width",
+        "overall_height", "rough_in_distance", "height", "width", "depth",
+        "inlet_hole_diameter", "hole_spacing", "bowl_outer_rim",
+        "internal_bowl_width", "rim_length",
+    ],
+    "material_finish": [
+        "material_finish", "material", "finish", "glazing_type",
+        "surface_finish", "body_material",
+    ],
+    "flush_system_type": [
+        "flush_system_type", "flush_method", "flush_type", "flushing_system",
+    ],
+    "trap_outlet_type": [
+        "trap_outlet_type", "s_trap_or_p_trap", "trap_type", "outlet_type",
+    ],
+    "product_color": [
+        "product_color", "color", "finish_color", "colour",
+    ],
+    "rough_in_inches": [
+        "rough_in_inches", "rough_in_distance", "roughin",
+    ],
+}
+
+# Reverse lookup: attribute_id → family name
+_ATTR_TO_FAMILY: dict[str, str] = {}
+for _family, _members in ATTRIBUTE_FAMILIES.items():
+    for _member in _members:
+        _ATTR_TO_FAMILY[_member] = _family
+
 
 def _normalize_text(s: str) -> str:
     return (s or "").strip().lower()
@@ -144,6 +180,53 @@ def extract_user_value_map(product_description: str) -> dict[str, str]:
     return values
 
 
+# Keywords in user-image OCR text that indicate a family is already provided
+_FAMILY_OCR_KEYWORDS: dict[str, list[str]] = {
+    "dimensions": ["mm", "inch", "height", "width", "depth", "cm", "dimension", "dimensions"],
+    "material_finish": ["ceramic", "porcelain", "vitreous", "stainless", "chrome"],
+    "flush_system_type": ["siphonic", "washdown", "jet flush"],
+    "trap_outlet_type": ["s-trap", "p-trap", "s trap", "p trap"],
+    "rough_in_inches": ["rough-in", "rough in", "roughin"],
+    # product_color: intentionally empty — "white"/"black" too generic for OCR matching
+}
+
+
+def _enrich_user_values_from_image_analysis(
+    user_values: dict[str, str],
+    user_image_analysis: dict,
+) -> None:
+    """
+    Enrich user_values in-place from Gemini's analysis of the user's own product images.
+    - Merges extracted attributes (lower confidence threshold since these are the user's images)
+    - Scans OCR detected_text for family keywords to mark entire families as provided
+    - Registers family-level keys so should_skip_question_for_claim catches family matches
+    """
+    # 1. Merge extracted attributes with lowered confidence threshold
+    for attr in (user_image_analysis.get("extracted_attributes") or []):
+        attr_id = (attr.get("attribute_id") or "").strip()
+        attr_val = (attr.get("value") or "").strip()
+        confidence = float(attr.get("confidence", 0) or 0)
+        if attr_id and attr_val and confidence >= 0.25:
+            if attr_id not in user_values:
+                user_values[attr_id] = attr_val
+            # Also register the family so family-level skip works
+            family = _ATTR_TO_FAMILY.get(attr_id)
+            if family and family not in user_values:
+                user_values[family] = attr_val
+
+    # 2. Scan OCR detected_text for family keywords
+    all_detected_text: list[str] = []
+    for summary in (user_image_analysis.get("image_summaries") or []):
+        all_detected_text.extend(summary.get("detected_text") or [])
+
+    ocr_blob = " ".join(all_detected_text).lower()
+
+    for family, keywords in _FAMILY_OCR_KEYWORDS.items():
+        if family not in user_values:
+            if any(kw in ocr_blob for kw in keywords):
+                user_values[family] = "detected in user image"
+
+
 def build_attribute_defaults_from_analysis(analysis: dict) -> dict[str, dict]:
     """
     Build attribute defaults from Gemini-extracted claims across all competitor images
@@ -185,15 +268,32 @@ def should_skip_question_for_claim(
 ) -> bool:
     """
     Skip asking if we can reasonably infer the user already provided this attribute.
+    Checks direct match, attribute-family match, and text-description match.
     """
     desc = _normalize_text(product_description)
+
+    # Direct match
     if attribute_id in user_values:
         return True
+
+    # Family match: if the attribute belongs to a family and any member
+    # (or the family key itself) is already in user_values, skip it.
+    family = _ATTR_TO_FAMILY.get(attribute_id)
+    if family:
+        if family in user_values:
+            return True
+        for member in ATTRIBUTE_FAMILIES.get(family, []):
+            if member in user_values:
+                return True
+
+    # Claim value found verbatim in text description
     if claim_value and _normalize_text(claim_value) in desc:
         return True
+
     # Rough-in skip heuristic
     if "rough_in" in attribute_id and "rough" in desc and "inch" in desc:
         return True
+
     return False
 
 
@@ -452,7 +552,7 @@ async def upload_competitor(
 
 @app.post("/api/upload-product")
 async def upload_product(
-    images: list[UploadFile] = File(...),
+    images: list[UploadFile] = File(default=[]),
     description: str = Form(""),
     session_id: str = Form(...),
 ):
@@ -460,7 +560,9 @@ async def upload_product(
     if session_id not in sessions:
         return {"success": False, "error": "Invalid session"}
 
-    image_paths = await save_upload_files(images, session_id, "product")
+    # Filter out empty file slots (browser may send an empty part)
+    real_images = [f for f in (images or []) if f and getattr(f, "filename", None)]
+    image_paths = await save_upload_files(real_images, session_id, "product") if real_images else []
 
     session = sessions[session_id]
     session["product"]["description"] = description
@@ -489,7 +591,7 @@ async def analyze(payload: dict):
         return {"success": False, "error": "No competitor images found"}
 
     try:
-        # Step 1: Analyze competitor catalog images
+        # Step 1: Analyze competitor catalog images + user product images IN PARALLEL
         description = competitor.get("description", "")
         features = competitor.get("features", [])
         full_description = description + "\n" + "\n".join(features)
@@ -498,14 +600,23 @@ async def analyze(payload: dict):
         competitor_images = competitor.get("images", [])[:COMPETITOR_IMAGE_CAP]
         session["competitor"]["images"] = competitor_images
 
-        analysis, cost1 = await asyncio.to_thread(
-            analyze_competitor_catalog,
-            competitor_images,
-            full_description,
+        product_images = product.get("images", [])
+        product_description = product.get("description", "")
+
+        # Run both analyses in parallel
+        competitor_task = analyze_competitor_catalog(competitor_images, full_description)
+        user_task = analyze_user_product_images(product_images[:5], product_description)
+
+        (analysis, cost1), (user_image_analysis, cost2) = await asyncio.gather(
+            competitor_task, user_task
         )
 
-        # Build a single attribute defaults map (for generation when user skips)
-        user_values = extract_user_value_map(product.get("description", ""))
+        # Step 2: Merge user-known attributes from description (rule-based)
+        #         + Gemini user image analysis (attributes + OCR text + family grouping)
+        user_values = extract_user_value_map(product_description)
+        _enrich_user_values_from_image_analysis(user_values, user_image_analysis)
+
+        # Step 3: Build attribute defaults from competitor analysis
         attribute_defaults = build_attribute_defaults_from_analysis(analysis)
 
         compiled_attributes: dict[str, str] = {
@@ -514,10 +625,9 @@ async def analyze(payload: dict):
         for attr_id, val in user_values.items():
             compiled_attributes[attr_id] = val
 
-        # Build questions directly from Gemini "claims"
+        # Step 4: Build questions from Gemini claims (with skip + dedup)
         questions: list[dict] = []
         question_ids: set[str] = set()
-        product_description = product.get("description", "")
 
         for img in analysis.get("images", []) or []:
             img_index = int(img.get("index", 0))
@@ -610,7 +720,7 @@ async def analyze(payload: dict):
                 })
                 question_ids.add(qid)
 
-        # Suggested additions: ask for their required claims too (skip only if we can infer from user text)
+        # Suggested additions: ask for their required claims too
         for add in analysis.get("suggested_additions", []) or []:
             addition_id = (add.get("id") or "").strip()
             if not addition_id:
@@ -655,12 +765,48 @@ async def analyze(payload: dict):
                     "source_value": value,
                 })
 
+        # Step 5: Deduplicate questions by attribute_id (keep first occurrence = earliest image)
+        seen_attrs: set[str] = set()
+        deduped_questions: list[dict] = []
+        for q in questions:
+            attr_id = q.get("attribute_id", "")
+            group_kind = q.get("group", {}).get("kind", "")
+            # Dedup key: attribute_id for competitor questions, full id for additions
+            dedup_key = attr_id if group_kind == "competitor_image" else q.get("id", attr_id)
+            if dedup_key in seen_attrs:
+                continue
+            seen_attrs.add(dedup_key)
+            deduped_questions.append(q)
+        questions = deduped_questions
+
+        # Step 6: Build image_display_data for frontend accordion
+        image_display_data = []
+        for img in analysis.get("images", []) or []:
+            idx = int(img.get("index", 0))
+            img_questions = [
+                q for q in questions
+                if q.get("group", {}).get("kind") == "competitor_image"
+                and q.get("group", {}).get("image_index") == idx
+            ]
+            image_display_data.append({
+                "index": idx,
+                "image_url": competitor_images[idx] if idx < len(competitor_images) else None,
+                "type": img.get("type", "other"),
+                "summary": img.get("summary") or img.get("intent", ""),
+                "question_count": len(img_questions),
+                "questions": img_questions,
+            })
+
         # Store in session
         session["analysis"] = analysis
         session["questions"] = questions
         session["compiled_attributes"] = compiled_attributes
+        session["user_image_analysis"] = user_image_analysis
         session["selected_additions"] = []
-        session["costs"].extend([cost1])
+        costs_list = [cost1]
+        if cost2 and cost2.get("input_tokens", 0) > 0:
+            costs_list.append(cost2)
+        session["costs"].extend(costs_list)
 
         total_cost_inr = sum(c.get("cost_inr", 0) for c in session["costs"])
 
@@ -668,7 +814,8 @@ async def analyze(payload: dict):
             "success": True,
             "analysis": analysis,
             "questions": questions,
-            "costs": [cost1],
+            "image_display_data": image_display_data,
+            "costs": costs_list,
             "total_cost_inr": round(total_cost_inr, 4),
         }
     except Exception as e:
@@ -785,8 +932,7 @@ async def api_generate_hero(
             return {"success": True, "hero_image_url": session["hero_image"], "mode": "cached", "costs": []}
 
         hero_url, cost = await asyncio.wait_for(
-            asyncio.to_thread(
-                generate_hero_image,
+            generate_hero_image(
                 session_id,
                 product_images,
                 product_description,
@@ -906,9 +1052,22 @@ async def api_generate_catalog_stream(session_id: str):
                                 if qid and attr_id and answers.get(qid):
                                     job_compiled_attributes[attr_id] = answers[qid]
 
+                    # Compute changed attributes (diff from competitor defaults)
+                    changed_attrs = {}
+                    if job.get("type") == "competitor":
+                        job_idx = job.get("image_index")
+                        img_data = by_index.get(job_idx, {})
+                        competitor_claims = {
+                            (c.get("attribute_id") or "").strip(): (c.get("value") or "").strip()
+                            for c in (img_data.get("claims") or [])
+                        }
+                        for attr_id, val in job_compiled_attributes.items():
+                            comp_val = competitor_claims.get(attr_id, "")
+                            if comp_val and str(val).strip().lower() != comp_val.lower():
+                                changed_attrs[attr_id] = val
+
                     image_url, cost = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            generate_catalog_image,
+                        generate_catalog_image(
                             session_id,
                             job["image_key"],
                             hero_image_url,
@@ -916,6 +1075,7 @@ async def api_generate_catalog_stream(session_id: str):
                             job.get("style_prompt") or "",
                             job.get("prompt_fragment") or "",
                             job_compiled_attributes,
+                            changed_attributes=changed_attrs or None,
                         ),
                         timeout=timeout_s,
                     )
@@ -1015,15 +1175,17 @@ async def api_regenerate_catalog(
         prompt_fragment = (prompt_fragment or "") + f"\nUser feedback: {feedback}"
 
     try:
-        image_url, cost = await asyncio.to_thread(
-            generate_catalog_image,
-            session_id,
-            image_key,
-            hero_image_url,
-            reference_intent_image_url,
-            style_prompt,
-            prompt_fragment,
-            compiled_attributes,
+        image_url, cost = await asyncio.wait_for(
+            generate_catalog_image(
+                session_id,
+                image_key,
+                hero_image_url,
+                reference_intent_image_url,
+                style_prompt,
+                prompt_fragment,
+                compiled_attributes,
+            ),
+            timeout=180,
         )
         session.setdefault("catalog_images", []).append({"key": image_key, "url": image_url})
         session["costs"].append(cost)
