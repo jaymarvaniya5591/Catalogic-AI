@@ -32,6 +32,9 @@ const state = {
     catalogTotal: 0,
     catalogCompleted: 0,
 
+    // Navigation
+    maxCompletedStep: 0,
+
     // Cost tracking
     totalCostInr: 0,
     costs: [],
@@ -50,12 +53,32 @@ function goToStep(n) {
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    // Robustness: if the user jumps between steps, auto-trigger generation if needed.
-    if (n === 4 && state.sessionId && !state.heroImageUrl) {
-        generateHeroImage({ regenerate: false });
+    // Restore cached content or auto-trigger generation
+    if (n === 3 && state.analysis) {
+        renderAttributeBreakdown(state.imageDisplayData);
+        renderSuggestedImages(state.analysis, state.questions);
+        validateStep3();
     }
-    if (n === 5 && state.sessionId && state.heroAccepted) {
-        if (!state.catalogImages || state.catalogImages.length === 0) {
+    if (n === 4) {
+        if (state.heroImageUrl) {
+            // Restore existing hero
+            const imgEl = document.getElementById('hero-image');
+            const placeholder = document.getElementById('hero-placeholder');
+            const actions = document.getElementById('hero-actions');
+            if (imgEl) { imgEl.src = state.heroImageUrl + '?t=' + Date.now(); imgEl.style.display = 'block'; }
+            if (placeholder) placeholder.style.display = 'none';
+            if (actions) actions.style.display = 'flex';
+            const step4Next = document.getElementById('btn-step4-next');
+            if (step4Next) step4Next.disabled = !state.heroAccepted;
+        } else if (state.sessionId && !state._heroGenerating) {
+            generateHeroImage({ regenerate: false });
+        }
+    }
+    if (n === 5) {
+        if (state.catalogImages && state.catalogImages.length > 0) {
+            // Restore existing catalog
+            restoreCatalogGrid();
+        } else if (state.sessionId && state.heroAccepted) {
             startCatalogGeneration();
         }
     }
@@ -67,13 +90,17 @@ function updateStepProgress(activeStep) {
 
     indicators.forEach((el, i) => {
         const step = i + 1;
-        el.classList.remove('active', 'completed');
+        el.classList.remove('active', 'completed', 'reachable');
         if (step === activeStep) el.classList.add('active');
         else if (step < activeStep) el.classList.add('completed');
+        else if (step <= state.maxCompletedStep) el.classList.add('reachable');
     });
 
     connectors.forEach((el, i) => {
-        el.classList.toggle('completed', i + 1 < activeStep);
+        const step = i + 1;
+        el.classList.remove('completed', 'reachable');
+        if (step < activeStep) el.classList.add('completed');
+        else if (step < state.maxCompletedStep) el.classList.add('reachable');
     });
 }
 
@@ -178,9 +205,24 @@ function validateStep1() {
     if (state.competitorMode === 'url') {
         const url = document.getElementById('competitor-url').value.trim();
         state.competitorUrl = url;
-        btn.disabled = !url;
+        // Only enable Continue after scrape succeeds and images are found
+        btn.disabled = !(state.scraped && state.scraped.success && state.competitorImages.length > 0);
     } else {
         btn.disabled = state.competitorFiles.length === 0;
+    }
+}
+
+// ── Button Loading Helper ──
+function setButtonLoading(btnId, loading, text) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    if (loading) {
+        btn.disabled = true;
+        btn.dataset.originalText = btn.textContent;
+        btn.innerHTML = '<span class="btn-spinner"></span> ' + (text || btn.textContent);
+    } else {
+        btn.disabled = false;
+        btn.textContent = text || btn.dataset.originalText || '';
     }
 }
 
@@ -189,6 +231,39 @@ function validateStep2() {
     const desc = document.getElementById('product-description').value.trim();
     state.productDescription = desc;
     btn.disabled = state.productFiles.length === 0 && !desc;
+}
+
+// ── Step Progress Bars ──
+function showStepProgress(stepNum, text, percent) {
+    const bar = document.getElementById(`step${stepNum}-progress`);
+    if (!bar) return;
+    bar.classList.add('active');
+    bar.classList.toggle('indeterminate', percent == null);
+    const fill = document.getElementById(`step${stepNum}-progress-fill`);
+    const textEl = document.getElementById(`step${stepNum}-progress-text`);
+    if (fill && percent != null) fill.style.width = `${percent}%`;
+    if (textEl) textEl.textContent = text || '';
+}
+
+function hideStepProgress(stepNum) {
+    const bar = document.getElementById(`step${stepNum}-progress`);
+    if (!bar) return;
+    bar.classList.remove('active', 'indeterminate');
+    const fill = document.getElementById(`step${stepNum}-progress-fill`);
+    if (fill) fill.style.width = '0%';
+}
+
+// Simulated timed progress: 0→targetPct over durationMs, returns interval ID
+function startTimedProgress(stepNum, text, durationMs, targetPct = 85) {
+    showStepProgress(stepNum, text, 0);
+    const intervalMs = 500;
+    const steps = durationMs / intervalMs;
+    const increment = targetPct / steps;
+    let current = 0;
+    return setInterval(() => {
+        current = Math.min(current + increment, targetPct);
+        showStepProgress(stepNum, text, Math.round(current));
+    }, intervalMs);
 }
 
 // ── Status Messages ──
@@ -223,8 +298,11 @@ function initNavigation() {
     document.getElementById('product-description').addEventListener('input', validateStep2);
     document.getElementById('btn-step2-back').addEventListener('click', () => goToStep(1));
     document.getElementById('btn-step2-next').addEventListener('click', async () => {
+        setButtonLoading('btn-step2-next', true, 'Uploading...');
         const ok = await uploadProductImages();
+        setButtonLoading('btn-step2-next', false, 'Analyze & Continue');
         if (!ok) return;
+        state.maxCompletedStep = Math.max(state.maxCompletedStep, 2);
         goToStep(3);
         runAnalysis();
     });
@@ -233,8 +311,11 @@ function initNavigation() {
     document.getElementById('btn-step3-back').addEventListener('click', () => goToStep(2));
     document.getElementById('btn-step3-next').addEventListener('click', async () => {
         collectAnswers();
+        setButtonLoading('btn-step3-next', true, 'Submitting...');
         const ok = await submitAnswers();
+        setButtonLoading('btn-step3-next', false, 'Generate Hero Image');
         if (!ok) return;
+        state.maxCompletedStep = Math.max(state.maxCompletedStep, 3);
         goToStep(4);
         // goToStep(4) already auto-triggers generateHeroImage via the step-4 guard
     });
@@ -258,9 +339,10 @@ function initNavigation() {
     // Hero actions
     document.getElementById('btn-accept-hero').addEventListener('click', () => {
         state.heroAccepted = true;
+        state.maxCompletedStep = Math.max(state.maxCompletedStep, 4);
         const btn = document.getElementById('btn-step4-next');
         if (btn) btn.disabled = false;
-        showStatus(4, 'Hero image accepted. Generating your catalog...', 'success');
+        showStatus(4, 'Hero image accepted. Click "Generate Full Catalog" to continue.', 'success');
     });
 
     document.getElementById('btn-regenerate-hero').addEventListener('click', () => {
@@ -295,7 +377,8 @@ function initStepClicks() {
     document.querySelectorAll('.step-indicator').forEach(el => {
         el.addEventListener('click', () => {
             const step = parseInt(el.dataset.step);
-            if (step <= state.currentStep) {
+            // Allow navigating to any step up to maxCompletedStep + 1 (the next actionable step)
+            if (step <= state.currentStep || step <= state.maxCompletedStep) {
                 goToStep(step);
             }
         });
@@ -308,9 +391,9 @@ async function scrapeCompetitorUrl() {
     if (!url) return;
 
     const btn = document.getElementById('btn-scrape');
-    btn.disabled = true;
-    btn.textContent = 'Analyzing...';
+    setButtonLoading('btn-scrape', true, 'Analyzing...');
     showStatus(1, 'Scraping product page... this takes 20-30 seconds, please wait.');
+    const progressTimer = startTimedProgress(1, 'Fetching product data...', 30000, 90);
 
     // Timeout after 90 seconds to prevent infinite hang
     const controller = new AbortController();
@@ -349,7 +432,8 @@ async function scrapeCompetitorUrl() {
             state.competitorImages = data.images || [];
             showScrapedResults(data);
             showStatus(1, `Found ${data.images.length} images from ${data.platform}`, 'success');
-            document.getElementById('btn-step1-next').disabled = false;
+            state.maxCompletedStep = Math.max(state.maxCompletedStep, 1);
+            validateStep1();
         } else {
             showStatus(1, (data.error || 'Scraping failed.') + ' You can switch to the "Upload Images" tab.', 'error');
             if (data.session_id) state.sessionId = data.session_id;
@@ -363,8 +447,10 @@ async function scrapeCompetitorUrl() {
             showStatus(1, 'Could not reach server. Make sure the server is running (.\\serve).', 'error');
         }
     } finally {
-        btn.disabled = false;
-        btn.textContent = 'Analyze URL';
+        clearInterval(progressTimer);
+        showStepProgress(1, '', 100);
+        setTimeout(() => hideStepProgress(1), 600);
+        setButtonLoading('btn-scrape', false, 'Analyze URL');
     }
 }
 
@@ -483,6 +569,7 @@ async function runAnalysis() {
         '<div class="placeholder-message"><div class="spinner"></div><p>Analyzing images...</p></div>';
     const suggestedSection = document.getElementById('suggested-section');
     if (suggestedSection) suggestedSection.style.display = 'none';
+    const analysisProgressTimer = startTimedProgress(3, 'Analyzing images & extracting attributes...', 50000, 85);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 180000);
@@ -497,7 +584,10 @@ async function runAnalysis() {
         clearTimeout(timeoutId);
         const data = await res.json();
 
+        clearInterval(analysisProgressTimer);
         if (data.success) {
+            showStepProgress(3, 'Complete!', 100);
+            setTimeout(() => hideStepProgress(3), 600);
             state.analysis = data.analysis;
             state.questions = data.questions || [];
             state.imageDisplayData = data.image_display_data || [];
@@ -508,10 +598,13 @@ async function runAnalysis() {
             showStatus(3, 'Analysis complete. Review and adjust values for your product.', 'success');
             validateStep3();
         } else {
+            hideStepProgress(3);
             showStatus(3, data.error || 'Analysis failed. Please try again.', 'error');
         }
     } catch (err) {
         clearTimeout(timeoutId);
+        clearInterval(analysisProgressTimer);
+        hideStepProgress(3);
         if (err.name === 'AbortError') {
             showStatus(3, 'Analysis timed out. Please try again.', 'error');
         } else {
@@ -847,6 +940,7 @@ async function generateHeroImage({ regenerate = false, overrideFile = null } = {
     if (imgEl) imgEl.style.display = 'none';
 
     showStatus(step, regenerate ? 'Regenerating hero image...' : 'Generating your hero image...', '');
+    const heroProgressTimer = startTimedProgress(4, 'Generating hero image...', 35000, 90);
 
     const formData = new FormData();
     formData.append('session_id', state.sessionId);
@@ -863,12 +957,16 @@ async function generateHeroImage({ regenerate = false, overrideFile = null } = {
         clearTimeout(timeoutId);
 
         const data = await res.json();
+        clearInterval(heroProgressTimer);
         if (!data.success) {
+            hideStepProgress(4);
             const msg = data.message || data.error || 'Hero generation failed.';
             showStatus(step, msg, 'error');
             return false;
         }
 
+        showStepProgress(4, 'Complete!', 100);
+        setTimeout(() => hideStepProgress(4), 600);
         state.heroImageUrl = data.hero_image_url;
 
         if (imgEl) {
@@ -885,6 +983,8 @@ async function generateHeroImage({ regenerate = false, overrideFile = null } = {
 
         return true;
     } catch (err) {
+        clearInterval(heroProgressTimer);
+        hideStepProgress(4);
         showStatus(step, 'Hero generation failed or timed out. Please retry or upload your own hero.', 'error');
         return false;
     } finally {
@@ -978,6 +1078,7 @@ function startCatalogGeneration() {
         if (progressFill) progressFill.style.width = `${pct}%`;
         if (progressText) progressText.textContent = `${state.catalogCompleted} / ${state.catalogTotal} images`;
 
+        state.catalogImages.push(data);
         if (data.status === 'success') {
             renderCard(data.key, data.image_url, 'success');
             if (data.cost) updateCostDisplay([data.cost], null);
@@ -989,8 +1090,10 @@ function startCatalogGeneration() {
     es.addEventListener('catalog_done', (e) => {
         try { es.close(); } catch (_) {}
         state.catalogEventSource = null;
+        state.maxCompletedStep = Math.max(state.maxCompletedStep, 5);
         if (downloadSection) downloadSection.style.display = 'block';
         showStatus(step, 'Catalog generation complete.', 'success');
+        updateStepProgress(state.currentStep);
     });
 
     es.onerror = () => {
@@ -1012,6 +1115,34 @@ async function regenerateCatalogImage(index) {
     } catch (_) {
         return null;
     }
+}
+
+function restoreCatalogGrid() {
+    const grid = document.getElementById('catalog-grid');
+    const progressFill = document.getElementById('progress-fill');
+    const progressText = document.getElementById('progress-text');
+    const downloadSection = document.getElementById('download-section');
+
+    if (grid) grid.innerHTML = '';
+    state.catalogImages.forEach(data => {
+        if (data.status === 'success') {
+            const card = document.createElement('div');
+            card.className = 'catalog-card';
+            card.innerHTML = `<div class="catalog-image-wrapper">
+                <img src="${data.image_url}" alt="${data.key}" class="catalog-image loaded" />
+            </div>
+            <div class="catalog-card-footer">
+                <span style="color:var(--text-secondary);font-size:12px;">${data.key}</span>
+                <span style="color:var(--text-muted);font-size:12px;">success</span>
+            </div>`;
+            grid.appendChild(card);
+        }
+    });
+
+    if (progressFill) progressFill.style.width = '100%';
+    if (progressText) progressText.textContent = `${state.catalogImages.length} / ${state.catalogTotal || state.catalogImages.length} images`;
+    if (downloadSection && state.maxCompletedStep >= 5) downloadSection.style.display = 'block';
+    showStatus(5, 'Catalog generation complete.', 'success');
 }
 
 async function downloadCatalog() {

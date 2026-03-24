@@ -114,6 +114,17 @@ body {
     border-color: var(--accent-gold);
 }
 
+.step-indicator.reachable .step-circle {
+    border-color: var(--accent-gold);
+    color: var(--accent-gold);
+    opacity: 0.6;
+}
+
+.step-indicator.reachable .step-label {
+    color: var(--accent-gold);
+    opacity: 0.6;
+}
+
 .step-label {
     font-size: 11px;
     color: var(--text-muted);
@@ -141,6 +152,11 @@ body {
 
 .step-connector.completed {
     background: var(--accent-gold);
+}
+
+.step-connector.reachable {
+    background: var(--accent-gold);
+    opacity: 0.4;
 }
 
 /* ── Step Sections ── */
@@ -313,6 +329,17 @@ body {
 .btn-large {
     padding: 14px 28px;
     font-size: 16px;
+}
+
+.btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(0, 0, 0, 0.2);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    vertical-align: middle;
 }
 
 .btn-skip {
@@ -718,6 +745,12 @@ body {
 .hero-placeholder {
     text-align: center;
     color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 40px 20px;
 }
 
 .hero-image {
@@ -779,6 +812,48 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+}
+
+/* ── Step Progress Bars (inline per-step) ── */
+.step-progress-bar {
+    margin: 12px 0 0;
+    display: none;
+}
+
+.step-progress-bar.active {
+    display: block;
+}
+
+.sp-bar {
+    height: 4px;
+    background: var(--bg-card);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.sp-fill {
+    height: 100%;
+    background: var(--accent-gold);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.step-progress-bar.indeterminate .sp-fill {
+    width: 30%;
+    animation: indeterminate 1.5s ease-in-out infinite;
+}
+
+@keyframes indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
+.sp-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    display: inline-block;
 }
 
 /* ── Progress Bar ── */
@@ -978,14 +1053,51 @@ body {
     animation: costPulse 0.3s ease;
 }
 
-/* ── Responsive ── */
+/* ── Responsive: Tablet ── */
+@media (max-width: 768px) {
+    .app {
+        max-width: 100%;
+        padding: 32px 20px 60px;
+    }
+
+    .header h1 {
+        font-size: 26px;
+    }
+
+    .catalog-grid {
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    }
+
+    .hero-container {
+        max-height: 400px;
+    }
+
+    .hero-actions {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+}
+
+/* ── Responsive: Mobile ── */
 @media (max-width: 640px) {
     .app {
         padding: 24px 16px 60px;
     }
 
+    .header h1 {
+        font-size: 22px;
+    }
+
+    .header .subtitle {
+        font-size: 13px;
+    }
+
     .step-card {
         padding: 20px;
+    }
+
+    .step-card h2 {
+        font-size: 20px;
     }
 
     .analysis-grid {
@@ -1024,6 +1136,39 @@ body {
 
     .input-group {
         flex-direction: column;
+    }
+
+    .btn {
+        padding: 12px 16px;
+        font-size: 13px;
+        min-height: 44px;
+    }
+
+    .btn-large {
+        padding: 14px 20px;
+        font-size: 15px;
+    }
+
+    .text-input {
+        font-size: 16px; /* Prevents iOS zoom on focus */
+    }
+
+    .upload-zone {
+        padding: 24px 16px;
+    }
+
+    .tab-btn {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+
+    .step-description {
+        font-size: 13px;
+    }
+
+    .cost-ticker {
+        bottom: 12px;
+        right: 12px;
     }
 }
 

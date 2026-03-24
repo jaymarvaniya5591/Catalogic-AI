@@ -145,6 +145,74 @@ def _extract_cost(response, model_name: str) -> dict:
     return cost_info
 
 
+# ── Product Category Detection ──
+
+async def detect_product_category(
+    title: str,
+    description: str,
+    features: list[str],
+) -> tuple[dict, dict]:
+    """
+    Detect the product category from scraped title/description/features.
+    Returns (category_info_dict, cost_info).
+    """
+    client = get_client()
+    features_text = "\n".join(f"- {f}" for f in (features or [])[:20])
+
+    prompt = f"""Analyze this product listing and determine the product category.
+
+Product title: {title}
+
+Product description:
+{description[:1500] if description else 'Not available'}
+
+Product features:
+{features_text or 'Not available'}
+
+Return a JSON object with:
+1. "category": The broad product category (e.g., "perfume", "sanitaryware", "cookware", "electronics", "furniture", "clothing", "skincare", "toys", etc.)
+2. "subcategory": The specific product type (e.g., "eau de parfum", "toilet/WC", "non-stick pan", "wireless earbuds")
+3. "relevant_attributes": Array of 8-15 product attributes relevant for this category. Each with:
+   - "attribute_id": snake_case identifier
+   - "label": Human-readable label
+   - "answer_type": "text", "choice", or "image"
+   - "typical_options": Array of 3-5 common options (for choice type, otherwise empty array)
+4. "environment_suggestion": A 1-2 sentence description of the ideal premium photography environment for this product category (e.g., "Dark marble surface with warm amber backlight and subtle smoke wisps" for perfume, "Modern marble bathroom with soft natural daylight" for sanitaryware)
+5. "attribute_families": Object mapping family names to arrays of related attribute_ids that should be grouped together (knowing one suppresses questions about others in same family)
+6. "ocr_keywords": Object mapping family names to arrays of keywords that indicate the attribute is already provided in OCR text
+
+Return ONLY valid JSON, no markdown."""
+
+    for attempt in range(2):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_ANALYSIS,
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                ),
+            )
+            cost = _extract_cost(response, MODEL_ANALYSIS)
+            cost["operation"] = "Category Detection"
+            result = _parse_json_response(response.text)
+            return result, cost
+        except Exception as e:
+            if attempt == 0:
+                continue
+            print(f"[GEMINI] Category detection failed: {e}")
+            # Return a generic fallback
+            return {
+                "category": "consumer product",
+                "subcategory": "general",
+                "relevant_attributes": [],
+                "environment_suggestion": "Clean, modern studio with soft natural lighting",
+                "attribute_families": {},
+                "ocr_keywords": {},
+            }, {"model": MODEL_ANALYSIS, "input_tokens": 0, "output_tokens": 0,
+                "cost_usd": 0, "cost_inr": 0, "operation": "Category Detection (fallback)"}
+
+
 class Claim(BaseModel):
     attribute_id: str
     label: str
@@ -189,15 +257,16 @@ class CatalogAnalysisResponse(BaseModel):
 
 # ── Function 1: Analyze Competitor Catalog ──
 
-async def analyze_competitor_catalog(images: list[str], description: str) -> tuple[dict, dict]:
+async def analyze_competitor_catalog(images: list[str], description: str, product_category: str = "", product_subcategory: str = "") -> tuple[dict, dict]:
     """
     Send all competitor images + description to Gemini.
     Returns (analysis_result, cost_info).
     """
     n = len(images)
     client = get_client()
+    category_label = f"{product_category}/{product_subcategory}" if product_category else "consumer products"
 
-    prompt = f"""You are a professional e-commerce catalog analyst for sanitaryware/bathroom products (toilets, WCs, flush systems).
+    prompt = f"""You are a professional e-commerce catalog analyst for {category_label} products.
 
 I'm showing you {n} catalog images from a competitor product listing, along with the product description.
 
@@ -226,11 +295,11 @@ From each image, do two things:
 2) Extract structured claims:
 From the same image, extract all technical or product attribute information that is explicitly communicated (on-image text, icons, diagrams, labeled parts, measurements, callouts, etc.).
 For each extracted claim output:
-- "attribute_id": stable snake_case id (examples: flush_system_type, trap_outlet_type, s_trap_or_p_trap, rough_in_inches, rim_type, bumper_design, dimensions, material_finish, flush_method, water_tank_compatibility)
+- "attribute_id": stable snake_case id relevant to this product category (e.g., dimensions, material_finish, product_color, weight, key features specific to this product type)
 - "label": human readable label (short)
 - "value": the value shown in the image (verbatim if possible, otherwise normalized)
 - "answer_type": one of: "text", "choice", or "image"
-- If answer_type is "choice", also provide "options" (3-5 options) that are plausible sanitaryware choices; ensure the competitor's "value" is included in options.
+- If answer_type is "choice", also provide "options" (3-5 options) that are plausible choices for this product category; ensure the competitor's "value" is included in options.
 - "confidence": number 0-1 (how confident you are that value is correct from the image)
 - "evidence_text": short snippet of what you see (max ~20 words). If you cannot quote, set to "".
 
@@ -363,17 +432,15 @@ class UserImageAnalysisResponse(BaseModel):
     extracted_attributes: List[UserExtractedAttribute]
     image_summaries: List[UserImageSummary]
 
-CANONICAL_ATTRIBUTE_IDS = (
-    "flush_system_type, trap_outlet_type, s_trap_or_p_trap, rough_in_inches, "
-    "rim_type, bumper_design, dimensions, material_finish, flush_method, "
-    "water_tank_compatibility, seat_close_type, product_color, product_weight, "
-    "warranty_years, certification, water_consumption_lpf, bowl_shape, "
-    "installation_type, pipe_size, glazing_type"
+DEFAULT_CANONICAL_ATTRIBUTE_IDS = (
+    "dimensions, material_finish, product_color, product_weight, "
+    "warranty_years, certification, installation_type"
 )
 
 async def analyze_user_product_images(
     images: list[str],
     product_description: str,
+    canonical_attributes: str = "",
 ) -> tuple[dict, dict]:
     """
     Analyze user's own product images via Gemini to extract attributes already visible.
@@ -400,13 +467,13 @@ For EACH image, examine with maximum detail:
 - All text visible via OCR (labels, specifications, dimensions, model numbers)
 - Any dimension diagrams or measurements (height, width, depth, rough-in distance)
 - Material appearance (ceramic, porcelain, etc.)
-- Product features visible (rimless, soft-close seat, trap type, flush mechanism)
+- Product features visible (specific to this product category)
 - Installation details, packaging info, certifications
 
 Return structured JSON with:
 
 1. "extracted_attributes": A list of all product attributes you can confidently extract.
-   Use these canonical attribute_ids where applicable: {CANONICAL_ATTRIBUTE_IDS}
+   Use these canonical attribute_ids where applicable: {canonical_attributes or DEFAULT_CANONICAL_ATTRIBUTE_IDS}
    Each attribute:
    - "attribute_id": snake_case id (use canonical ids above when possible)
    - "value": the extracted value
@@ -461,6 +528,7 @@ async def generate_master_context_block(
     product_images: list[str],
     product_description: str,
     compiled_attributes: dict,
+    product_category: str = "",
 ) -> tuple[str, dict]:
     """
     Generate a rich, reusable master context block that describes the product
@@ -474,13 +542,14 @@ async def generate_master_context_block(
     """
     client = get_client()
     attributes_text = _attributes_to_text(compiled_attributes)
+    category_hint = f"\nProduct category: {product_category}" if product_category else ""
 
     prompt = f"""You are a professional product photographer and catalog designer.
 I'm giving you reference images of a product and its description. Your job is to create a detailed
 MASTER CONTEXT BLOCK that will be reused across multiple image generation prompts to ensure consistency.
 
 Product description:
-{product_description}
+{product_description}{category_hint}
 
 Known technical attributes:
 {attributes_text}
@@ -665,7 +734,7 @@ class Question(BaseModel):
 
 # ── Function 3: Generate Smart Questions ──
 
-async def generate_smart_questions(gaps: list[dict], analysis: dict) -> tuple[list[dict], dict]:
+async def generate_smart_questions(gaps: list[dict], analysis: dict, product_category: str = "") -> tuple[list[dict], dict]:
     """
     Turn information gaps into user-friendly questions with intelligent defaults.
     Returns (questions_list, cost_info).
@@ -675,8 +744,9 @@ async def generate_smart_questions(gaps: list[dict], analysis: dict) -> tuple[li
 
     client = get_client()
     strategy = analysis.get("catalog_strategy", "No strategy available.")
+    category_label = product_category or "consumer product"
 
-    prompt = f"""You are helping a premium Indian sanitaryware brand called Ruva create catalog images.
+    prompt = f"""You are helping a premium Indian brand create catalog images for their {category_label} product.
 Based on the information gaps identified below, generate smart questions for the user.
 
 Gaps found:
@@ -689,14 +759,14 @@ For each gap, generate a question with:
 - "text": A clear, friendly question (1-2 sentences max)
 - "type": "text" (free text answer), "choice" (multiple choice), or "image" (user uploads an image)
 - "options": If type is "choice", provide 3-5 options as a list. Otherwise null.
-- "default_value": An intelligent default answer if the user skips this question. Make it a reasonable assumption for a premium Indian sanitaryware brand.
+- "default_value": An intelligent default answer if the user skips this question. Make it a reasonable assumption for a premium {category_label} product.
 - "context": A brief note (1 sentence) explaining why this matters (shown as hint text)
 
 Rules:
 - Maximum 8 questions total
 - Prioritize high-importance gaps first
 - Make questions practical and easy to answer
-- Default values should be sensible for a premium sanitaryware brand (Ruva)
+- Default values should be sensible for a premium {category_label} brand
 - Keep language simple and non-technical
 
 Return a valid JSON array of question objects."""
@@ -838,8 +908,8 @@ CRITICAL REQUIREMENTS:
 PRODUCT FIDELITY (MOST IMPORTANT):
 - Study the reference product images PIXEL BY PIXEL before generating
 - The generated product must be INDISTINGUISHABLE from the reference — same exact silhouette, same proportions, same design language
-- Reproduce EVERY detail: exact bowl/body shape, tank/top proportions, button/handle style and placement, base profile, surface curvature, edge treatments
-- If the reference shows a specific ratio between parts (e.g., tank height vs bowl height), maintain that EXACT ratio
+- Reproduce EVERY detail: exact shape, proportions, design language, surface finish, functional elements, hardware placement, edge treatments
+- If the reference shows a specific ratio between parts (e.g., component proportions), maintain that EXACT ratio
 - If the reference shows rounded corners vs sharp corners, curved vs angular surfaces — match it precisely
 - DO NOT use a generic product shape. The reference images ARE the ground truth
 - Common mistakes to AVOID: wrong proportions, generic/default shapes, missing or altered design details, different hardware/buttons, smoothing over distinctive features
@@ -984,10 +1054,10 @@ ENVIRONMENT CONSISTENCY (NON-NEGOTIABLE):
 {hero_env_override}
 
 FUNCTIONAL DIAGRAMS (if applicable):
-- If {"Image 2 shows" if reference_intent_image_url else "this slot requires"} a FUNCTIONAL DIAGRAM (water flow, mechanism cross-section, internal working, flush system, cutaway view):
-  You MUST show the same functional visualization with clear arrows, flow indicators, cross-section views, or cutaway renders that explain HOW the mechanism works
+- If {"Image 2 shows" if reference_intent_image_url else "this slot requires"} a FUNCTIONAL DIAGRAM (mechanism cross-section, internal working, cutaway view, technical visualization):
+  You MUST show the same functional visualization with clear arrows, flow indicators, cross-section views, or cutaway renders that explain HOW the product/mechanism works
   The visualization must be technically informative and prominent, not just decorative
-  Use blue/cyan for water flow, directional arrows for movement, labels for key components
+  Use appropriate color coding for flows/indicators, directional arrows for movement, labels for key components
 
 TYPOGRAPHY (for images with text/callouts/labels — MUST follow exactly):
 - Font: Thin/light-weight elegant sans-serif (Montserrat Light / Lato Light style) — NOT bold, NOT heavy

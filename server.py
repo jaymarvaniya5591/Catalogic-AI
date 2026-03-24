@@ -12,6 +12,7 @@ from zipfile import ZipFile
 from config import UPLOAD_DIR, OUTPUT_DIR
 from scraper import scrape_product_url
 from gemini_service import (
+    detect_product_category,
     analyze_competitor_catalog,
     analyze_user_product_images,
     generate_master_context_block,
@@ -56,6 +57,7 @@ def create_session(session_id: str) -> dict:
         "hero_image": None,
         "catalog_images": [],
         "costs": [],
+        "category": None,
     }
     sessions[session_id] = session
     return session
@@ -126,13 +128,25 @@ def _normalize_text(s: str) -> str:
     return (s or "").strip().lower()
 
 
-def extract_user_value_map(product_description: str) -> dict[str, str]:
+def extract_user_value_map(product_description: str, category: str = "") -> dict[str, str]:
     """
     Lightweight extraction of user-provided attributes from free text.
     If we can't confidently extract, we return nothing and let defaults handle it.
+    For non-sanitaryware categories, returns empty dict (Gemini handles it).
     """
     desc = _normalize_text(product_description)
     values: dict[str, str] = {}
+
+    # Only apply sanitaryware-specific heuristics for that category
+    if category and category not in ("sanitaryware", "bathroom", "toilet"):
+        # Generic extractions that work for any category
+        for token in ["ceramic", "porcelain", "stainless", "chrome", "polished", "matte", "glossy", "wooden", "plastic", "glass", "metal", "leather"]:
+            if token in desc:
+                values["material_finish"] = token
+                break
+        if any(w in desc for w in ["dimension", "dimensions", "mm", "inch", "cm", "length", "width", "height", "size"]):
+            values["dimensions"] = "dimensions provided"
+        return values
 
     # Flush system / method
     if "siphonic" in desc:
@@ -195,6 +209,7 @@ _FAMILY_OCR_KEYWORDS: dict[str, list[str]] = {
 def _enrich_user_values_from_image_analysis(
     user_values: dict[str, str],
     user_image_analysis: dict,
+    dynamic_ocr_keywords: dict | None = None,
 ) -> None:
     """
     Enrich user_values in-place from Gemini's analysis of the user's own product images.
@@ -222,7 +237,9 @@ def _enrich_user_values_from_image_analysis(
 
     ocr_blob = " ".join(all_detected_text).lower()
 
-    for family, keywords in _FAMILY_OCR_KEYWORDS.items():
+    # Use dynamic OCR keywords if provided (from category detection), else fall back to static
+    ocr_kw = dynamic_ocr_keywords if dynamic_ocr_keywords else _FAMILY_OCR_KEYWORDS
+    for family, keywords in ocr_kw.items():
         if family not in user_values:
             if any(kw in ocr_blob for kw in keywords):
                 user_values[family] = "detected in user image"
@@ -319,11 +336,15 @@ def _evidence_from_snippets(snippets: list[str], prefer_keywords: list[str] | No
 
 def extract_attribute_claims_from_visible_text(
     visible_text_snippets: list[str],
+    category: str = "",
 ) -> list[dict]:
     """
     Convert OCR-visible text snippets into structured competitor claims.
-    This is deliberately conservative: it only creates claims for common sanitaryware specs.
+    For sanitaryware: uses hardcoded heuristics. For other categories: returns empty list
+    (Gemini's own claim extraction in the analysis prompt handles it).
     """
+    if category and category not in ("sanitaryware", "bathroom", "toilet"):
+        return []
     t = " ".join(visible_text_snippets or []).lower()
     claims: list[dict] = []
 
@@ -511,6 +532,20 @@ async def scrape_url(payload: dict):
     session["competitor"]["features"] = result.get("features", [])
     session["competitor"]["images"] = result.get("images", [])
 
+    # Detect product category from scraped data
+    if result["success"]:
+        try:
+            category_info, cat_cost = await detect_product_category(
+                title=result.get("title", ""),
+                description=result.get("description", ""),
+                features=result.get("features", []),
+            )
+            session["category"] = category_info
+            session["costs"].append(cat_cost)
+            print(f"[SERVER] Detected category: {category_info.get('category')} / {category_info.get('subcategory')}")
+        except Exception as e:
+            print(f"[SERVER] Category detection failed (non-fatal): {e}")
+
     return {
         "success": result["success"],
         "session_id": session_id,
@@ -604,9 +639,23 @@ async def analyze(payload: dict):
         product_images = product.get("images", [])
         product_description = product.get("description", "")
 
+        # Extract category info for dynamic prompts
+        cat = session.get("category") or {}
+        cat_name = cat.get("category", "")
+        cat_sub = cat.get("subcategory", "")
+        canonical_attrs = ", ".join(
+            a["attribute_id"] for a in cat.get("relevant_attributes", [])
+        ) if cat.get("relevant_attributes") else ""
+
         # Run both analyses in parallel
-        competitor_task = analyze_competitor_catalog(competitor_images, full_description)
-        user_task = analyze_user_product_images(product_images[:5], product_description)
+        competitor_task = analyze_competitor_catalog(
+            competitor_images, full_description,
+            product_category=cat_name, product_subcategory=cat_sub,
+        )
+        user_task = analyze_user_product_images(
+            product_images[:5], product_description,
+            canonical_attributes=canonical_attrs,
+        )
 
         (analysis, cost1), (user_image_analysis, cost2) = await asyncio.gather(
             competitor_task, user_task
@@ -614,8 +663,11 @@ async def analyze(payload: dict):
 
         # Step 2: Merge user-known attributes from description (rule-based)
         #         + Gemini user image analysis (attributes + OCR text + family grouping)
-        user_values = extract_user_value_map(product_description)
-        _enrich_user_values_from_image_analysis(user_values, user_image_analysis)
+        user_values = extract_user_value_map(product_description, category=cat_name)
+        _enrich_user_values_from_image_analysis(
+            user_values, user_image_analysis,
+            dynamic_ocr_keywords=cat.get("ocr_keywords"),
+        )
 
         # Step 3: Build attribute defaults from competitor analysis
         attribute_defaults = build_attribute_defaults_from_analysis(analysis)
@@ -675,7 +727,7 @@ async def analyze(payload: dict):
 
             # If Gemini claims are incomplete/missing, fall back to heuristics on visible OCR snippets.
             visible_text_snippets = img.get("visible_text_snippets", []) or []
-            heuristic_claims = extract_attribute_claims_from_visible_text(visible_text_snippets)
+            heuristic_claims = extract_attribute_claims_from_visible_text(visible_text_snippets, category=cat_name)
             for claim in heuristic_claims:
                 attribute_id = (claim.get("attribute_id") or "").strip()
                 if not attribute_id:
@@ -936,11 +988,13 @@ async def api_generate_hero(
         # This replaces dry key-value attributes with natural-language prose
         if not session.get("master_context_block") or regenerate:
             try:
+                cat = session.get("category") or {}
                 master_context, mc_cost = await asyncio.wait_for(
                     generate_master_context_block(
                         product_images,
                         product_description,
                         compiled_attributes,
+                        product_category=cat.get("category", ""),
                     ),
                     timeout=30,
                 )

@@ -212,57 +212,114 @@ async def _scrape_flipkart(page, url: str, session_id: str) -> dict:
     await page.goto(url, timeout=30000, wait_until="domcontentloaded")
     await page.wait_for_timeout(3000)
 
-    # Title — try multiple selectors (Flipkart changes class names)
+    # Title — try multiple selectors (Flipkart changes class names frequently)
     title = ""
-    for selector in ["span.VU-ZEz", "h1.yhB1nd", "span.B_NuCI", "h1._9E25nV"]:
+    title_selectors = [
+        "span.VU-ZEz", "h1.yhB1nd", "span.B_NuCI", "h1._9E25nV",
+        "h1[class*='title'] span", "h1 span", "span[class*='Title']",
+    ]
+    for selector in title_selectors:
         try:
             el = await page.query_selector(selector)
             if el:
                 title = (await el.inner_text()).strip()
-                _log(f"[Flipkart] Title: {title[:60]}")
-                break
+                if title:
+                    _log(f"[Flipkart] Title: {title[:60]}")
+                    break
         except Exception:
             continue
+    # JS fallback for title
+    if not title:
+        try:
+            title = await page.evaluate("() => (document.querySelector('h1') || {}).innerText || ''")
+            title = title.strip()
+            if title:
+                _log(f"[Flipkart] Title (JS fallback): {title[:60]}")
+        except Exception:
+            pass
 
-    # Images
+    # Images — primary: comprehensive JS extraction for rukminim CDN images
     image_urls = []
-    for selector in ["img._0DkuPH", "img._396cs4", "div._3kidJX img"]:
-        try:
-            imgs = await page.query_selector_all(selector)
-            for img in imgs:
-                src = await img.get_attribute("src")
-                if src:
-                    src = re.sub(r"/\d+/\d+/", "/832/832/", src)
-                    image_urls.append(src)
-            if image_urls:
-                _log(f"[Flipkart] Found {len(image_urls)} images")
-                break
-        except Exception:
-            continue
+    try:
+        image_urls = await page.evaluate("""
+            () => {
+                const urls = new Set();
+                // Method 1: All img tags with rukminim src
+                document.querySelectorAll('img').forEach(img => {
+                    const src = img.src || img.dataset?.src || img.getAttribute('srcset')?.split(' ')[0] || '';
+                    if (src && src.includes('rukminim') && !src.includes('icon') && !src.includes('logo') && !src.includes('avatar')) {
+                        urls.add(src);
+                    }
+                });
+                // Method 2: Background images with rukminim
+                document.querySelectorAll('div[style*="rukminim"], li[style*="rukminim"]').forEach(el => {
+                    const match = el.style.backgroundImage?.match(/url\\(['"]?(.*?)['"]?\\)/);
+                    if (match && match[1]) urls.add(match[1]);
+                });
+                return Array.from(urls);
+            }
+        """)
+        if image_urls:
+            image_urls = [re.sub(r"/\d+/\d+/", "/832/832/", u) for u in image_urls]
+            _log(f"[Flipkart] Found {len(image_urls)} images via JS (rukminim)")
+    except Exception:
+        pass
 
-    # Fallback: try all product images via JS
+    # Fallback: CSS selectors if JS found nothing
     if not image_urls:
+        for selector in [
+            "img._0DkuPH", "img._396cs4", "div._3kidJX img",
+            "img[class*='DByuf']", "img[class*='_2r_T1I']",
+            "div[class*='CXW8mj'] img", "ul[class*='ZqtVYK'] img",
+        ]:
+            try:
+                imgs = await page.query_selector_all(selector)
+                for img in imgs:
+                    src = await img.get_attribute("src")
+                    if src and "rukminim" in src:
+                        src = re.sub(r"/\d+/\d+/", "/832/832/", src)
+                        image_urls.append(src)
+                if image_urls:
+                    _log(f"[Flipkart] Found {len(image_urls)} images via CSS selector")
+                    break
+            except Exception:
+                continue
+
+    # Retry: if still no images, wait for networkidle and try again
+    if not image_urls:
+        _log("[Flipkart] No images found on first pass, retrying with networkidle...")
         try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+            await page.wait_for_timeout(2000)
             image_urls = await page.evaluate("""
                 () => {
-                    const imgs = document.querySelectorAll('img[loading="eager"], div[class*="image"] img');
-                    return Array.from(imgs)
-                        .map(img => img.src)
-                        .filter(src => src && src.includes('rukminim'));
+                    const urls = new Set();
+                    document.querySelectorAll('img').forEach(img => {
+                        const src = img.src || img.dataset?.src || '';
+                        if (src && src.includes('rukminim') && !src.includes('icon') && !src.includes('logo')) {
+                            urls.add(src);
+                        }
+                    });
+                    return Array.from(urls);
                 }
             """)
             if image_urls:
                 image_urls = [re.sub(r"/\d+/\d+/", "/832/832/", u) for u in image_urls]
-                _log(f"[Flipkart] Found {len(image_urls)} images via JS evaluation")
+                _log(f"[Flipkart] Found {len(image_urls)} images on retry")
         except Exception:
             pass
 
     # De-duplicate
     image_urls = list(dict.fromkeys(image_urls))
 
-    # Features
+    # Features — try multiple selectors + spec table
     features = []
-    for selector in ["li._7eSDEz", "li.rgWa7D", "div._2418kt li"]:
+    feature_selectors = [
+        "li._7eSDEz", "li.rgWa7D", "div._2418kt li",
+        "li[class*='_21Ahn-']", "div[class*='highlight'] li",
+        "div[class*='xFVion'] li", "div[class*='_2cM9lP'] li",
+    ]
+    for selector in feature_selectors:
         try:
             items = await page.query_selector_all(selector)
             for item in items:
@@ -275,16 +332,49 @@ async def _scrape_flipkart(page, url: str, session_id: str) -> dict:
         except Exception:
             continue
 
+    # Spec table fallback
+    if not features:
+        try:
+            rows = await page.query_selector_all("table[class*='_14cfVK'] tr, div[class*='specification'] tr, table._1dE9nO tr")
+            for row in rows:
+                text = (await row.inner_text()).strip()
+                if text and "\t" in text:
+                    features.append(text.replace("\t", ": "))
+                elif text and len(text) > 3:
+                    features.append(text)
+            if features:
+                _log(f"[Flipkart] Found {len(features)} spec rows")
+        except Exception:
+            pass
+
     # Description
     description = ""
-    for selector in ["div._4gvKMe", "div._1mXcCf"]:
+    desc_selectors = [
+        "div._4gvKMe", "div._1mXcCf",
+        "div[class*='_1mXcCf']", "div[class*='description']",
+    ]
+    for selector in desc_selectors:
         try:
             el = await page.query_selector(selector)
             if el:
                 description = (await el.inner_text()).strip()[:2000]
-                break
+                if description:
+                    break
         except Exception:
             continue
+
+    # Visible text fallback for description
+    if not description:
+        try:
+            description = await page.evaluate("""
+                () => {
+                    const el = document.querySelector('div[class*="product"] p, div[class*="detail"] p');
+                    return el ? el.innerText.substring(0, 2000) : '';
+                }
+            """)
+            description = (description or "").strip()
+        except Exception:
+            pass
     _log(f"[Flipkart] Description: {len(description)} chars")
 
     # Download images
