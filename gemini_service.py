@@ -978,6 +978,8 @@ async def generate_catalog_image(
     compiled_attributes: dict,
     changed_attributes: dict | None = None,
     master_context: str = "",
+    image_type: str = "other",
+    extra_reference_image_urls: list[str] | None = None,
 ) -> tuple[str, dict]:
     """
     Generate a catalog image and save it under outputs/{session_id}/catalog/{image_key}.png.
@@ -1003,13 +1005,22 @@ For all other attributes, match the competitor image's approach and visual style
 {attributes_text}
 """
 
-    # Environment override — ALL catalog images must use the hero's environment,
-    # never the competitor's. This is critical because competitor images often have
-    # very distinct settings (teal walls, coloured tiles) that Gemini tends to copy.
+    # Environment override — lifestyle/hero/feature images must use the hero's room.
+    # Functional diagrams and dimension sheets use a clean neutral backdrop so that
+    # X-ray overlays, cutaway renders, and dimension lines read clearly.
+    _is_diagram = image_type in ("functional", "dimensions", "infographic")
     hero_env_override = ""
     if reference_intent_image_url:
-        hero_env_override = """
-ENVIRONMENT OVERRIDE (ABSOLUTE RULE — applies to every catalog image):
+        if _is_diagram:
+            hero_env_override = """
+BACKGROUND FOR THIS DIAGRAM IMAGE:
+- This is a technical diagram / infographic — use a CLEAN, NEUTRAL background (soft white, light warm grey, or very subtle gradient) so that overlays, X-ray elements, dimension lines and callout text read clearly
+- Do NOT copy the competitor's coloured background — only copy the diagram's structure and layout
+- The PRODUCT itself must still look identical to IMAGE 1 (HERO) in shape, colour, and design details
+"""
+        else:
+            hero_env_override = """
+ENVIRONMENT OVERRIDE (ABSOLUTE RULE — applies to every lifestyle/hero/feature image):
 - The background, walls, floor, and lighting MUST match IMAGE 1 (HERO) exactly
 - COMPLETELY IGNORE the environment/setting shown in Image 2 (competitor) — treat their walls, floor, tiles, background colour, and props as if they were invisible
 - Do NOT copy ANY part of the competitor's room, bathroom, tiles, wall colour, floor material, or props — not even subtly
@@ -1094,6 +1105,13 @@ QUALITY STANDARDS:
     contents: list = [prompt, _load_image_for_gemini(hero_image_url)]
     if reference_intent_image_url:
         contents.append(_load_image_for_gemini(reference_intent_image_url))
+
+    # Extra reference images (e.g. a dimension drawing for the dimensions slot)
+    for extra_url in (extra_reference_image_urls or []):
+        try:
+            contents.append(_load_image_for_gemini(extra_url))
+        except Exception:
+            pass
 
     contents.extend(_collect_answer_image_parts(compiled_attributes))
 

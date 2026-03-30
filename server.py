@@ -1056,6 +1056,7 @@ async def api_generate_catalog_stream(session_id: str):
         jobs.append({
             "key": f"competitor_{int(idx)}",
             "type": "competitor",
+            "image_type": img.get("type") or "other",
             "reference_intent_image_url": competitor_url,
             "style_prompt": img.get("style_prompt") or "",
             "prompt_fragment": f"INTENT: {img.get('intent') or ''}\nVISUAL ELEMENTS: {', '.join([str(x) for x in (img.get('key_elements') or [])])}\nDETAILED SCENE DESCRIPTION: {img.get('summary') or ''}",
@@ -1140,6 +1141,15 @@ async def api_generate_catalog_stream(session_id: str):
                             if comp_val and str(val).strip().lower() != comp_val.lower():
                                 changed_attrs[attr_id] = val
 
+                    # For dimension-type additions, pass the product images as extra
+                    # references so Gemini reads exact numbers from any uploaded
+                    # dimension drawing instead of inventing them.
+                    extra_refs = None
+                    job_key = job.get("image_key", "")
+                    job_frag = (job.get("prompt_fragment") or "").lower()
+                    if "dimension" in job_key or "dimension" in job_frag:
+                        extra_refs = session.get("product", {}).get("images") or None
+
                     image_url, cost = await asyncio.wait_for(
                         generate_catalog_image(
                             session_id,
@@ -1151,6 +1161,8 @@ async def api_generate_catalog_stream(session_id: str):
                             job_compiled_attributes,
                             changed_attributes=changed_attrs or None,
                             master_context=session.get("master_context_block", ""),
+                            image_type=job.get("image_type") or "other",
+                            extra_reference_image_urls=extra_refs,
                         ),
                         timeout=timeout_s,
                     )
@@ -1225,6 +1237,9 @@ async def api_regenerate_catalog(
     style_prompt = ""
     prompt_fragment = ""
 
+    regen_image_type = "other"
+    extra_refs = None
+
     if image_key.startswith("competitor_"):
         idx = int(image_key.replace("competitor_", ""))
         img = by_index.get(idx)
@@ -1233,6 +1248,7 @@ async def api_regenerate_catalog(
         reference_intent_image_url = competitor_images[idx] if idx < len(competitor_images) else None
         style_prompt = img.get("style_prompt") or ""
         prompt_fragment = f"INTENT: {img.get('intent') or ''}\nVISUAL ELEMENTS: {', '.join([str(x) for x in (img.get('key_elements') or [])])}\nDETAILED SCENE DESCRIPTION: {img.get('summary') or ''}"
+        regen_image_type = img.get("type") or "other"
     elif image_key.startswith("addition_"):
         aid = image_key.replace("addition_", "")
         additions = analysis.get("suggested_additions", []) or []
@@ -1242,6 +1258,8 @@ async def api_regenerate_catalog(
         reference_intent_image_url = None
         style_prompt = "Consistent studio product photography styling (match the HERO look)."
         prompt_fragment = add.get("generation_prompt_fragment") or ""
+        if "dimension" in aid or "dimension" in (prompt_fragment or "").lower():
+            extra_refs = session.get("product", {}).get("images") or None
     else:
         return {"success": False, "error": "INVALID_IMAGE_KEY"}
 
@@ -1260,6 +1278,8 @@ async def api_regenerate_catalog(
                 prompt_fragment,
                 compiled_attributes,
                 master_context=session.get("master_context_block", ""),
+                image_type=regen_image_type,
+                extra_reference_image_urls=extra_refs,
             ),
             timeout=180,
         )
