@@ -1014,6 +1014,22 @@ function startCatalogGeneration() {
     if (progressText) progressText.textContent = '0 / 0 images';
     if (downloadSection) downloadSection.style.display = 'none';
 
+    // Show hero image at the top of the catalog grid as the visual anchor
+    if (grid && state.heroImageUrl) {
+        const heroCard = document.createElement('div');
+        heroCard.className = 'catalog-card';
+        heroCard.innerHTML = `<div class="catalog-image-wrapper">
+            <img src="${state.heroImageUrl}?t=${Date.now()}" alt="hero" class="catalog-image loaded" />
+        </div>
+        <div class="catalog-card-footer">
+            <span style="color:var(--text-secondary);font-size:12px;">hero</span>
+            <span style="color:var(--gold);font-size:12px;">visual anchor</span>
+        </div>`;
+        grid.appendChild(heroCard);
+        const ph = document.getElementById('catalog-placeholder');
+        if (ph) ph.remove();
+    }
+
     // Immediate placeholder (before SSE start)
     if (grid) {
         const ph = document.createElement('div');
@@ -1124,6 +1140,21 @@ function restoreCatalogGrid() {
     const downloadSection = document.getElementById('download-section');
 
     if (grid) grid.innerHTML = '';
+
+    // Re-show hero card at top when restoring
+    if (grid && state.heroImageUrl) {
+        const heroCard = document.createElement('div');
+        heroCard.className = 'catalog-card';
+        heroCard.innerHTML = `<div class="catalog-image-wrapper">
+            <img src="${state.heroImageUrl}" alt="hero" class="catalog-image loaded" />
+        </div>
+        <div class="catalog-card-footer">
+            <span style="color:var(--text-secondary);font-size:12px;">hero</span>
+            <span style="color:var(--gold);font-size:12px;">visual anchor</span>
+        </div>`;
+        grid.appendChild(heroCard);
+    }
+
     state.catalogImages.forEach(data => {
         if (data.status === 'success') {
             const card = document.createElement('div');

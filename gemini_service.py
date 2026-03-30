@@ -554,7 +554,7 @@ Product description:
 Known technical attributes:
 {attributes_text}
 
-Generate TWO sections:
+Generate THREE sections:
 
 SECTION A — PRODUCT LOCKED SPECS:
 Write a dense, visual, natural-language description of the product (~200 words). Cover:
@@ -603,6 +603,15 @@ PHOTOGRAPHY STYLE LOCKED:
 - [Style parameter 1]
 - [Style parameter 2]
 - [etc.]
+
+TYPOGRAPHY LOCKED:
+- Font: [thin/light-weight sans-serif family]
+- Headings: [UPPERCASE, thin weight, letter-spacing, placement]
+- Text color: [color values for dark/light backgrounds]
+- Accent color: [warm gold/amber value and usage rule]
+- Callout lines: [weight, style]
+- Icons: [style — line-art, monochrome]
+- Layout: [symmetric/balanced rules]
 """
 
     contents: list = [prompt]
@@ -904,6 +913,7 @@ CRITICAL REQUIREMENTS:
 - Full product visible with ~10% breathing room on all sides
 - Amazon A+ listing quality — top 0.01% of product images in this category
 - NO text, NO watermarks, NO branding, NO logos anywhere in the image
+- NOTE: The reference product images provided may contain watermarks or brand overlays — IGNORE them entirely; reproduce only the physical product shape, color, and design details
 
 PRODUCT FIDELITY (MOST IMPORTANT):
 - Study the reference product images PIXEL BY PIXEL before generating
@@ -968,7 +978,6 @@ async def generate_catalog_image(
     compiled_attributes: dict,
     changed_attributes: dict | None = None,
     master_context: str = "",
-    image_type: str = "other",
 ) -> tuple[str, dict]:
     """
     Generate a catalog image and save it under outputs/{session_id}/catalog/{image_key}.png.
@@ -994,15 +1003,18 @@ For all other attributes, match the competitor image's approach and visual style
 {attributes_text}
 """
 
-    # Hero-type environment override — when regenerating a hero-style image,
-    # ignore the competitor's environment entirely (e.g., their teal wall)
+    # Environment override — ALL catalog images must use the hero's environment,
+    # never the competitor's. This is critical because competitor images often have
+    # very distinct settings (teal walls, coloured tiles) that Gemini tends to copy.
     hero_env_override = ""
-    if image_type == "hero" and reference_intent_image_url:
+    if reference_intent_image_url:
         hero_env_override = """
-ENVIRONMENT OVERRIDE (this slot is a HERO-style image):
-- IGNORE the environment/setting shown in Image 2 (the competitor's image) — do NOT copy their wall color, floor, or background
-- Use ONLY the environment from Image 1 (YOUR hero image) — same walls, floor, lighting
-- Image 2 is ONLY a reference for camera angle, composition, and framing — NOT for environment/background
+ENVIRONMENT OVERRIDE (ABSOLUTE RULE — applies to every catalog image):
+- The background, walls, floor, and lighting MUST match IMAGE 1 (HERO) exactly
+- COMPLETELY IGNORE the environment/setting shown in Image 2 (competitor) — treat their walls, floor, tiles, background colour, and props as if they were invisible
+- Do NOT copy ANY part of the competitor's room, bathroom, tiles, wall colour, floor material, or props — not even subtly
+- Use ONLY the environment, wall colour/material, floor, and lighting from Image 1 (HERO)
+- Image 2 is a reference ONLY for composition purpose and layout — NEVER for environment or background
 """
 
     # Build the image reference instructions based on what we have
@@ -1029,6 +1041,13 @@ DETAILED REFERENCE:
 
 {changed_section}
 
+{hero_env_override}
+
+{"LAYOUT MATCHING (CRITICAL):" if reference_intent_image_url else ""}
+{"- Match the EXACT layout structure of Image 2: same number of views/panels, same arrangement, same information hierarchy" if reference_intent_image_url else ""}
+{"- If Image 2 shows 2 views, generate EXACTLY 2 views. If it shows 4 views, generate EXACTLY 4. Count carefully." if reference_intent_image_url else ""}
+{"- Recreate the SAME visual storytelling approach — same composition type, same information flow" if reference_intent_image_url else ""}
+
 PRODUCT FIDELITY (CRITICAL):
 - The product in this image must be IDENTICAL to Image 1 (HERO) — not just similar, IDENTICAL
 - Same exact shape, silhouette, proportions, surface finish, color, texture, and every visible design detail
@@ -1039,28 +1058,15 @@ PRODUCT FIDELITY (CRITICAL):
 SINGLE PRODUCT RULE:
 - Show EXACTLY ONE product unit in this image — never duplicate, mirror, or show multiple copies of the product
 
-{"LAYOUT MATCHING (CRITICAL):" if reference_intent_image_url else ""}
-{"- Match the EXACT layout structure of Image 2: same number of views/panels, same arrangement, same information hierarchy" if reference_intent_image_url else ""}
-{"- If Image 2 shows 2 views, generate EXACTLY 2 views. If it shows 4 views, generate EXACTLY 4. Count carefully." if reference_intent_image_url else ""}
-{"- Recreate the SAME visual storytelling approach — same composition type, same information flow" if reference_intent_image_url else ""}
-
-ENVIRONMENT CONSISTENCY (NON-NEGOTIABLE):
-- Background environment MUST match the HERO image: same wall material, same wall color, same floor material, same lighting direction
-- NEVER copy the environment/background from Image 2 (competitor) — only copy its PURPOSE and LAYOUT
-- If Image 2 shows a teal wall, colored wall, or any specific setting — IGNORE that setting entirely
-- Use the HERO image's setting as the ONLY environment reference
-- The viewer should feel all images were shot in the same room on the same day
-- {"Serve the SAME PURPOSE as Image 2, but showing the product from Image 1" if reference_intent_image_url else "Follow the slot instructions to create the appropriate catalog image"}
-{hero_env_override}
-
 FUNCTIONAL DIAGRAMS (if applicable):
 - If {"Image 2 shows" if reference_intent_image_url else "this slot requires"} a FUNCTIONAL DIAGRAM (mechanism cross-section, internal working, cutaway view, technical visualization):
   You MUST show the same functional visualization with clear arrows, flow indicators, cross-section views, or cutaway renders that explain HOW the product/mechanism works
   The visualization must be technically informative and prominent, not just decorative
   Use appropriate color coding for flows/indicators, directional arrows for movement, labels for key components
 
-TYPOGRAPHY (for images with text/callouts/labels — MUST follow exactly):
-- Font: Thin/light-weight elegant sans-serif (Montserrat Light / Lato Light style) — NOT bold, NOT heavy
+TYPOGRAPHY (ABSOLUTE RULE — for ALL images with any text, callouts, or labels):
+- DO NOT copy fonts, font weight, text style, or text colour from Image 2 (competitor) — their typography is irrelevant and must be completely ignored
+- Font: Thin/light-weight elegant sans-serif (Montserrat Light / Lato Light style) — NOT bold, NOT heavy, NOT the competitor's style
 - Headings: UPPERCASE, thin weight, generous letter-spacing, centered symmetrically at top
 - Body/label text: Light weight, same font family, clean and minimal
 - Text color: White or warm off-white (#F5F0E8) on dark overlays; charcoal (#2A2A2A) on light backgrounds
@@ -1070,12 +1076,18 @@ TYPOGRAPHY (for images with text/callouts/labels — MUST follow exactly):
 - Layout: SYMMETRIC and balanced — even spacing, centered headings, evenly distributed callouts on left/right
 - This typography MUST match ALL other infographic images in this catalog — identical font, weight, colors, icon style
 
+WATERMARK & BRANDING WARNING (ABSOLUTE RULE):
+- Image 2 (the competitor reference) likely contains a brand watermark, logo, or diagonal text overlay (e.g., brand name printed across the image)
+- You MUST completely IGNORE any watermarks, brand names, logos, or overlay text you see in Image 2
+- NEVER reproduce, copy, or include any such marks in the generated image
+- The final image must be 100% watermark-free and brand-neutral — no text from Image 2 should appear anywhere
+
 QUALITY STANDARDS:
 - Hyperrealistic PHOTOGRAPH — NOT an illustration, NOT a 3D render, NOT CGI
 - DSLR-quality depth of field, warm natural lighting
 - Aspect ratio: 1:1 square
 - Amazon A+ listing quality — top 0.01% of product images
-- NO competitor branding, NO watermarks
+- ABSOLUTELY NO watermarks, brand names, logos, or overlay text — treat any marks seen in reference images as invisible
 - If you lack exact data for text/numbers shown in the reference, use the product attributes provided above — do NOT invent specifications
 """
 
