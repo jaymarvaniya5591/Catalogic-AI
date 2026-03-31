@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Catalogic AI - Manual Image Generation Prompts</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f1115;
+            --surface-color: #1a1d24;
+            --card-color: rgba(30, 33, 40, 0.7);
+            --primary-glow: #6366f1;
+            --secondary-glow: #ec4899;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.6;
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Ambient Background Glows */
+        .ambient-light {
+            position: fixed;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            filter: blur(100px);
+            z-index: -1;
+            opacity: 0.15;
+            pointer-events: none;
+            animation: pulse 10s infinite alternate;
+        }
+
+        .ambient-1 {
+            top: -100px;
+            left: -100px;
+            background: var(--primary-glow);
+        }
+
+        .ambient-2 {
+            bottom: -100px;
+            right: -100px;
+            background: var(--secondary-glow);
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.1; }
+            100% { transform: scale(1.2); opacity: 0.2; }
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 4rem 2rem;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            background: linear-gradient(to right, #818cf8, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: inline-block;
+        }
+
+        p.subtitle {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .prompt-card {
+            background: var(--card-color);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 3rem;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .prompt-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Subtly animated gradient border top */
+        .prompt-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--primary-glow), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.8s ease;
+        }
+
+        .prompt-card:hover::before {
+            transform: translateX(100%);
+        }
+
+        .step-badge {
+            display: inline-block;
+            background: rgba(99, 102, 241, 0.15);
+            color: #818cf8;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            font-family: 'Outfit', sans-serif;
+            margin-bottom: 1rem;
+            border: 1px solid rgba(129, 140, 248, 0.3);
+        }
+
+        .prompt-card h2 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            color: white;
+        }
+
+        .prompt-card p.desc {
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+            font-size: 0.95rem;
+        }
+
+        .prompt-box {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .prompt-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(255,255,255,0.03);
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+        }
+
+        .prompt-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .copy-btn {
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: white;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .copy-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .copy-btn:active {
+            transform: scale(0.95);
+        }
+
+        pre {
+            padding: 1.5rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            color: #e2e8f0;
+            line-height: 1.5;
+        }
+
+        /* Highlight variables inside prompt */
+        .var {
+            color: #f472b6;
+            background: rgba(244, 114, 182, 0.1);
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .usage-section {
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+            border: 1px solid var(--border-color);
+        }
+        
+        .usage-section h3 {
+            font-family: 'Outfit', sans-serif;
+            color: #cbd5e1;
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+        }
+
+        .usage-list {
+            list-style: none;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        .usage-list li {
+            margin-bottom: 0.75rem;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+
+        .usage-list li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: #818cf8;
+            font-weight: bold;
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #22c55e;
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(34, 197, 94, 0.3);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+            font-weight: 500;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="ambient-light ambient-1"></div>
+    <div class="ambient-light ambient-2"></div>
+
+    <div class="container">
+        <header>
+            <h1>Catalogic AI Prompts</h1>
+            <p class="subtitle">A manual guide to recreating the AI-powered catalog generation pipeline using standard generative AI interfaces.</p>
+        </header>
+
+        <!-- STEP 1: Master Context -->
+        <article class="prompt-card">
+            <span class="step-badge">Step 1: The Context Block</span>
+            <h2>Generate Master Context</h2>
+            <p class="desc">Before generating final catalogue images, we ask an overarching LLM (like Claude or Gemini) to craft a strictly formatted "Master Context Block" describing the product and environment based on images.</p>
+            
+            <div class="prompt-box">
+                <div class="prompt-header">
+                    <span class="prompt-label">Text-To-Text Prompt (Upload product images)</span>
+                    <button class="copy-btn" onclick="copyToClipboard('prompt1')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        Copy
+                    </button>
+                </div>
+                <pre id="prompt1">You are a professional product photographer and catalog designer.
+I'm giving you reference images of a product and its description. Your job is to create a detailed
+MASTER CONTEXT BLOCK that will be reused across multiple image generation prompts to ensure consistency.
+
+Product description: <span class="var">[Insert Product Name/Description Here]</span>
+
+Generate THREE sections:
+
+SECTION A — PRODUCT LOCKED SPECS:
+Write a dense, visual, natural-language description of the product (~200 words). Cover:
+- Exact product type and category
+- Brand name (if visible or mentioned)
+- Shape, form factor, silhouette — describe with precision (e.g., "elongated oval bowl, smooth curved body")
+- Color, finish, surface texture (e.g., "glossy pure white ceramic, high-gloss, mirror-like surface sheen")
+- Material and construction details
+- Key design features visible in the images
+- Proportions and dimensional relationships between parts
+- Any buttons, handles, mechanisms, or functional elements
+- Base/mounting style
+
+Study the reference images carefully and describe what you SEE, not what you assume.
+
+SECTION B — PHOTOGRAPHY STYLE LOCKED:
+Based on the product category, determine the ideal premium photography environment and write locked style parameters:
+- Rendering style (always: "Hyperrealistic photographic rendering — NOT illustrative, NOT cartoon, NOT 3D render")
+- Lighting (natural soft daylight, warm morning/afternoon light — specify exact direction e.g. "from upper-left at 45 degrees")
+- Environment/setting appropriate for this product category (e.g., marble bathroom for sanitaryware, modern kitchen for cookware) — be VERY specific about wall material/color, floor material/color, and ambient elements
+- Camera style (DSLR-quality depth of field, sharp product focus)
+- Aspect ratio: 1:1 square
+- SINGLE PRODUCT ONLY: Every image must show exactly ONE product unit
+- NO text, no watermarks, no logos
+
+SECTION C — TYPOGRAPHY LOCKED (for infographic/diagram images):
+Define a premium typography system:
+- Font: Thin/light-weight elegant sans-serif
+- Headings: Thin uppercase sans-serif, generous letter-spacing, centered
+- Color scheme: White or warm off-white on dark backgrounds
+- Accent: Subtle warm gold/amber (#C4A265) for divider lines
+
+Format your output EXACTLY like this:
+PRODUCT LOCKED SPECS: [Your detailed product description here]
+PHOTOGRAPHY STYLE LOCKED: [List style parameters]
+TYPOGRAPHY LOCKED: [List typography rules]</pre>
+            </div>
+
+            <div class="usage-section">
+                <h3>How to use this:</h3>
+                <ul class="usage-list">
+                    <li>Open ChatGPT, Claude, or Gemini Advanced.</li>
+                    <li>Upload 2-3 clear reference pictures of the raw product.</li>
+                    <li>Paste the prompt above and replace the bracketed placeholder.</li>
+                    <li><strong>Save the output!</strong> You will use that "Master Context" block in the next steps.</li>
+                </ul>
+            </div>
+        </article>
+
+        <!-- STEP 2: Hero Image -->
+        <article class="prompt-card">
+            <span class="step-badge">Step 2: The Anchor</span>
+            <h2>Generate The Hero Image</h2>
+            <p class="desc">Now we head to an image generator (like Midjourney, Google Imagen, or DALL-E 3). This step creates the visual anchor that all subsequent images must reference.</p>
+            
+            <div class="prompt-box">
+                <div class="prompt-header">
+                    <span class="prompt-label">Image Gen Prompt (Optional: Provide product image as cref/Image Prompt)</span>
+                    <button class="copy-btn" onclick="copyToClipboard('prompt2')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        Copy
+                    </button>
+                </div>
+                <pre id="prompt2">Generate ONE hyperrealistic photograph of this product as the HERO catalog image.
+This is the VISUAL ANCHOR — all other catalog images will reference this for consistent product appearance.
+
+<span class="var">[PASTE THE OUTPUT FROM STEP 1 HERE (Master Context Block)]</span>
+
+CRITICAL REQUIREMENTS:
+- The product must be the SOLE subject — exactly ONE product unit, never duplicated or mirrored
+- Placed in a premium environment appropriate for this product category (the master context defines the exact environment)
+- Warm natural daylight streaming from the left side at ~45 degrees, creating subtle soft shadows on the right
+- Hyperrealistic PHOTOGRAPH — NOT a 3D render, NOT an illustration, NOT CGI
+- DSLR-quality: sharp focus on the product, gentle depth-of-field blur on the background
+- Camera angle: 3/4 front view, slightly elevated — showing the product's best angle with full dimensionality
+- Full product visible with ~10% breathing room on all sides
+- Amazon A+ listing quality
+- NO text, NO watermarks, NO branding, NO logos anywhere in the image
+
+PRODUCT FIDELITY (MOST IMPORTANT):
+- The generated product must be identical to the references — same exact silhouette, same proportions.
+- Reproduce EVERY detail: exact shape, proportions, design language, surface finish, functional elements.
+- DO NOT use a generic product shape.</pre>
+            </div>
+
+            <div class="usage-section">
+                <h3>How to use this:</h3>
+                <ul class="usage-list">
+                    <li>In tools like Midjourney, use the <code>--cref</code> parameter pointing to your raw product image if possible.</li>
+                    <li>In standard image generators, upload the raw product picture as an 'Image Prompt' or 'Reference Image' (keep structure strong).</li>
+                    <li>This Hero image establishes the lighting and background for the rest of the generated catalog.</li>
+                </ul>
+            </div>
+        </article>
+
+        <!-- STEP 3: Catalog Variations -->
+        <article class="prompt-card">
+            <span class="step-badge">Step 3: The Variations</span>
+            <h2>Generate Catalog Layouts</h2>
+            <p class="desc">This is used to generate infographics, dimensions, or feature shots mimicking a competitor's layout but applying your product and styling.</p>
+            
+            <div class="prompt-box">
+                <div class="prompt-header">
+                    <span class="prompt-label">Image Gen Prompt (Provide Hero Image + Competitor Layout Image)</span>
+                    <button class="copy-btn" onclick="copyToClipboard('prompt3')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        Copy
+                    </button>
+                </div>
+                <pre id="prompt3">Generate ONE catalog image for an Amazon A+ product listing.
+
+You are given TWO reference images:
+- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. The generated image must show this EXACT product — same shape, color, proportions.
+- IMAGE 2 (COMPETITOR INTENT): This shows what this catalog slot needs to COMMUNICATE — the purpose, composition, information, and visual story.
+
+<span class="var">[PASTE THE OUTPUT FROM STEP 1 HERE (Master Context Block)]</span>
+
+WHAT THIS IMAGE MUST COMMUNICATE:
+<span class="var">[Describe what you want to show e.g. "A feature highlight showing the waterproof seal" or "A dimension diagram"]</span>
+
+ENVIRONMENT OVERRIDE (ABSOLUTE RULE):
+- The background, walls, floor, and lighting MUST match IMAGE 1 (HERO) exactly.
+- COMPLETELY IGNORE the environment/setting shown in Image 2 (competitor) — treat their walls, floor, and props as invisible.
+- Image 2 is a reference ONLY for composition and layout structure.
+
+LAYOUT MATCHING (CRITICAL):
+- Match the EXACT layout structure of Image 2: same number of views/panels, same information hierarchy.
+- Recreate the SAME visual storytelling approach.
+
+PRODUCT FIDELITY:
+- The product in this image must be IDENTICAL to Image 1 (HERO).
+- Show EXACTLY ONE product unit (unless the layout demands multiple angles).
+
+TYPOGRAPHY (ABSOLUTE RULE):
+- DO NOT copy fonts, colors, or styles from Image 2 (competitor).
+- Use thin/light-weight elegant sans-serif, centered headings, clean layout.
+- NO watermarks or logos.</pre>
+            </div>
+            
+            <div class="usage-section">
+                <h3>How to use this:</h3>
+                <ul class="usage-list">
+                    <li>Upload your newly generated <strong>HERO image</strong> (from Step 2).</li>
+                    <li>Upload the <strong>Competitor's image</strong> that shows the layout/information you want to copy (e.g., an infographic with dimensions).</li>
+                    <li>Update the bracketed sections to describe exactly what feature or diagram is being visualized.</li>
+                </ul>
+            </div>
+        </article>
+
+    </div>
+
+    <div class="toast" id="toast">Prompt copied to clipboard!</div>
+
+    <script>
+        function copyToClipboard(elementId) {
+            const pre = document.getElementById(elementId);
+            // Replace the styled spans with plain text brackets for the clipboard
+            const htmlContent = pre.innerHTML;
+            const textToCopy = htmlContent
+                .replace(/<span class="var">/g, '')
+                .replace(/<\/span>/g, '')
+                // Also remove any other HTML tags just in case
+                .replace(/<[^>]*>/g, '')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&amp;/g, '&');
+
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                const toast = document.getElementById('toast');
+                toast.classList.add('show');
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                }, 3000);
+            });
+        }
+    </script>
+</body>
+</html>
