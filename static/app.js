@@ -10,6 +10,14 @@ const state = {
     competitorDescription: '',
     scraped: null,
 
+    // Scratch mode
+    flowMode: null,           // 'competitor' | 'scratch'
+    scratchCategory: 'bathroom_products',
+    scratchProductType: 'toilet',
+    scratchQuestions: [],     // question groups from /api/scratch/init
+    scratchSlotMeta: [],      // catalog slot metadata for selection UI
+    scratchSelectedSlots: [], // slot_ids user wants to generate
+
     // Step 2
     productFiles: [],
     productDescription: '',
@@ -40,6 +48,49 @@ const state = {
     costs: [],
 };
 
+function setSessionId(id) {
+    state.sessionId = id;
+    if (id) localStorage.setItem('ruva_session_id', id);
+}
+
+async function tryRestoreSession() {
+    const savedId = localStorage.getItem('ruva_session_id');
+    if (!savedId) return false;
+    try {
+        const res = await fetch(`/api/session/${encodeURIComponent(savedId)}`);
+        const data = await res.json();
+        if (!data.success) { localStorage.removeItem('ruva_session_id'); return false; }
+
+        state.sessionId = savedId;
+        state.maxCompletedStep = data.max_step || 0;
+
+        if (data.hero_image) {
+            state.heroImageUrl = data.hero_image;
+            state.heroAccepted = true;
+        }
+
+        const catalogResults = data.catalog_images || [];
+        if (catalogResults.length > 0) {
+            state.catalogImages = catalogResults.map(r => ({
+                key: r.key,
+                status: r.status || (r.image_url ? 'success' : 'failed'),
+                image_url: r.image_url || null,
+                error: r.error || null,
+            }));
+            state.catalogTotal = catalogResults.length;
+            state.catalogCompleted = catalogResults.length;
+        }
+
+        const targetStep = Math.min(data.max_step || 1, 5);
+        if (targetStep >= 1) {
+            showStatus(1, `Session restored. Continuing from step ${targetStep}.`, 'success');
+            goToStep(targetStep);
+            return true;
+        }
+    } catch (_) {}
+    return false;
+}
+
 // ── Step Navigation ──
 function goToStep(n) {
     if (n < 1 || n > 5) return;
@@ -54,10 +105,24 @@ function goToStep(n) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     // Restore cached content or auto-trigger generation
-    if (n === 3 && state.analysis) {
-        renderAttributeBreakdown(state.imageDisplayData);
-        renderSuggestedImages(state.analysis, state.questions);
-        validateStep3();
+    if (n === 3) {
+        if (state.flowMode === 'scratch') {
+            document.getElementById('step3-competitor-content').style.display = 'none';
+            document.getElementById('step3-scratch-content').style.display = 'block';
+            if (state.scratchSlotMeta.length > 0) {
+                renderSlotSelector(state.scratchSlotMeta);
+            }
+            if (state.scratchQuestions.length > 0) {
+                renderScratchQuestions(state.scratchQuestions);
+            }
+            validateStep3();
+        } else if (state.analysis) {
+            document.getElementById('step3-competitor-content').style.display = 'block';
+            document.getElementById('step3-scratch-content').style.display = 'none';
+            renderAttributeBreakdown(state.imageDisplayData);
+            renderSuggestedImages(state.analysis, state.questions);
+            validateStep3();
+        }
     }
     if (n === 4) {
         if (state.heroImageUrl) {
@@ -202,6 +267,12 @@ function renderPreviews(files, grid, fileKey) {
 // ── Validation ──
 function validateStep1() {
     const btn = document.getElementById('btn-step1-next');
+    if (!btn) return;
+    if (state.flowMode === 'scratch') {
+        // Scratch mode uses its own "Continue" button (#btn-scratch-continue), not this one
+        btn.disabled = true;
+        return;
+    }
     if (state.competitorMode === 'url') {
         const url = document.getElementById('competitor-url').value.trim();
         state.competitorUrl = url;
@@ -280,7 +351,12 @@ function clearStatus(stepNum) {
 
 // ── Navigation Buttons ──
 function initNavigation() {
-    // Step 1
+    // Step 1 — scratch continue button
+    document.getElementById('btn-scratch-continue').addEventListener('click', () => {
+        initScratchFlow();
+    });
+
+    // Step 1 — competitor flow
     document.getElementById('competitor-url').addEventListener('input', validateStep1);
     document.getElementById('btn-scrape').addEventListener('click', scrapeCompetitorUrl);
     document.getElementById('competitor-url').addEventListener('keydown', (e) => {
@@ -291,6 +367,7 @@ function initNavigation() {
             const ok = await uploadCompetitorImages();
             if (!ok) return;
         }
+        state.flowMode = 'competitor';
         goToStep(2);
     });
 
@@ -298,26 +375,39 @@ function initNavigation() {
     document.getElementById('product-description').addEventListener('input', validateStep2);
     document.getElementById('btn-step2-back').addEventListener('click', () => goToStep(1));
     document.getElementById('btn-step2-next').addEventListener('click', async () => {
-        setButtonLoading('btn-step2-next', true, 'Uploading...');
+        const loadingText = state.flowMode === 'scratch' ? 'Uploading...' : 'Uploading...';
+        setButtonLoading('btn-step2-next', true, loadingText);
         const ok = await uploadProductImages();
-        setButtonLoading('btn-step2-next', false, 'Analyze & Continue');
+        const nextLabel = state.flowMode === 'scratch' ? 'Continue' : 'Analyze & Continue';
+        setButtonLoading('btn-step2-next', false, nextLabel);
         if (!ok) return;
         state.maxCompletedStep = Math.max(state.maxCompletedStep, 2);
         goToStep(3);
-        runAnalysis();
+        if (state.flowMode !== 'scratch') {
+            runAnalysis();
+        }
     });
 
     // Step 3
     document.getElementById('btn-step3-back').addEventListener('click', () => goToStep(2));
     document.getElementById('btn-step3-next').addEventListener('click', async () => {
-        collectAnswers();
-        setButtonLoading('btn-step3-next', true, 'Submitting...');
-        const ok = await submitAnswers();
-        setButtonLoading('btn-step3-next', false, 'Generate Hero Image');
-        if (!ok) return;
-        state.maxCompletedStep = Math.max(state.maxCompletedStep, 3);
-        goToStep(4);
-        // goToStep(4) already auto-triggers generateHeroImage via the step-4 guard
+        if (state.flowMode === 'scratch') {
+            collectAnswers();
+            setButtonLoading('btn-step3-next', true, 'Saving...');
+            const ok = await submitScratchAnswers();
+            setButtonLoading('btn-step3-next', false, 'Generate Hero Image');
+            if (!ok) return;
+            state.maxCompletedStep = Math.max(state.maxCompletedStep, 3);
+            goToStep(4);
+        } else {
+            collectAnswers();
+            setButtonLoading('btn-step3-next', true, 'Submitting...');
+            const ok = await submitAnswers();
+            setButtonLoading('btn-step3-next', false, 'Generate Hero Image');
+            if (!ok) return;
+            state.maxCompletedStep = Math.max(state.maxCompletedStep, 3);
+            goToStep(4);
+        }
     });
 
     // Step 4
@@ -426,7 +516,7 @@ async function scrapeCompetitorUrl() {
         const data = await res.json();
 
         if (data.success) {
-            state.sessionId = data.session_id;
+            setSessionId(data.session_id);
             state.scraped = data;
             state.competitorUrl = url;
             state.competitorImages = data.images || [];
@@ -436,7 +526,7 @@ async function scrapeCompetitorUrl() {
             validateStep1();
         } else {
             showStatus(1, (data.error || 'Scraping failed.') + ' You can switch to the "Upload Images" tab.', 'error');
-            if (data.session_id) state.sessionId = data.session_id;
+            if (data.session_id) setSessionId(data.session_id);
         }
     } catch (err) {
         clearTimeout(timeoutId);
@@ -506,7 +596,7 @@ async function uploadCompetitorImages() {
         const data = await res.json();
 
         if (data.success) {
-            state.sessionId = data.session_id;
+            setSessionId(data.session_id);
             state.competitorImages = data.images || [];
             showStatus(1, `Uploaded ${data.images.length} images`, 'success');
             return true;
@@ -540,6 +630,29 @@ async function uploadProductImages() {
         if (data.success) {
             state.productDescription = data.description;
             showStatus(2, `Uploaded ${data.images.length} product images`, 'success');
+            
+            // In scratch mode, trigger AI color detection in background
+            if (state.flowMode === 'scratch' && data.images && data.images.length > 0) {
+                fetch('/api/scratch/detect-color', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: state.sessionId, image_url: data.images[0] })
+                }).then(async r => {
+                    const cData = await r.json();
+                    if (cData.success && cData.color) {
+                        const colorInput = document.querySelector('input[data-qid="q_color"]');
+                        if (colorInput) {
+                            colorInput.value = cData.color;
+                            colorInput.classList.add('ai-detected');
+                            // If there's a status label next to it we could update it, 
+                            // but setting the value directly will make it visible!
+                        } else {
+                            state.answers['q_color'] = cData.color;
+                        }
+                    }
+                }).catch(e => console.error('Color detection failed:', e));
+            }
+
             return true;
         } else {
             showStatus(2, data.error || 'Upload failed', 'error');
@@ -774,7 +887,19 @@ function makeQuestionRow(q, disabledForSelection) {
                 ${opt}
             </label>`;
         }).join('');
-        inputHTML = `<div class="q-row-input"><div class="pill-group">${pillsHTML}</div></div>`;
+        // "Other" pill + hidden text input
+        const otherPill = `<label class="pill-option pill-option-other${disabledForSelection ? ' disabled' : ''}" id="pill-other-${q.id}">
+                <input type="radio" name="q_${q.id}" value="__other__"
+                       class="question-answer" data-qid="${q.id}"
+                       id="radio-other-${q.id}" ${disabledAttr} />
+                Other
+            </label>`;
+        const otherInput = `<div class="other-input-wrapper" id="other-wrapper-${q.id}" style="display:none; margin-top:8px;">
+                <input type="text" class="text-input other-custom-input"
+                       id="other-input-${q.id}"
+                       placeholder="Enter custom value..." />
+            </div>`;
+        inputHTML = `<div class="q-row-input"><div class="pill-group">${pillsHTML}${otherPill}</div>${otherInput}</div>`;
     } else if (q.type === 'image') {
         inputHTML = `<div class="q-row-input">
             <label class="btn btn-secondary btn-small"
@@ -788,10 +913,12 @@ function makeQuestionRow(q, disabledForSelection) {
             <span class="question-image-name" id="qimg-${q.id}"></span>
         </div>`;
     } else {
+        const prefillValue = state.answers[q.id] || "";
         inputHTML = `<div class="q-row-input">
             <input type="text" class="text-input question-answer"
                    data-qid="${q.id}"
                    placeholder="${defaultValue}"
+                   value="${prefillValue}"
                    ${disabledAttr} />
         </div>`;
     }
@@ -805,6 +932,15 @@ function makeQuestionRow(q, disabledForSelection) {
                 row.querySelectorAll('.pill-option').forEach(p => p.classList.remove('selected'));
                 pill.classList.add('selected');
                 pill.querySelector('input').checked = true;
+
+                // Show/hide "Other" text input
+                const wrapper = row.querySelector(`#other-wrapper-${q.id}`);
+                const otherInput = row.querySelector(`#other-input-${q.id}`);
+                if (wrapper) {
+                    const isOther = pill.classList.contains('pill-option-other');
+                    wrapper.style.display = isOther ? 'block' : 'none';
+                    if (isOther && otherInput) otherInput.focus();
+                }
             });
         });
     }
@@ -823,7 +959,12 @@ function handleQuestionImage(input, qid) {
 
 function validateStep3() {
     const btn = document.getElementById('btn-step3-next');
-    btn.disabled = !state.analysis;
+    if (!btn) return;
+    if (state.flowMode === 'scratch') {
+        btn.disabled = false;  // scratch questions are always valid (defaults cover everything)
+    } else {
+        btn.disabled = !state.analysis;
+    }
 }
 
 function collectAnswers() {
@@ -834,7 +975,13 @@ function collectAnswers() {
         if (el.type === 'text') {
             state.answers[qid] = el.value.trim() || null;
         } else if (el.type === 'radio' && el.checked) {
-            state.answers[qid] = el.value;
+            if (el.value === '__other__') {
+                // Read from the custom text input for this question
+                const customInput = document.getElementById(`other-input-${qid}`);
+                state.answers[qid] = (customInput && customInput.value.trim()) || null;
+            } else {
+                state.answers[qid] = el.value;
+            }
         }
     });
 }
@@ -1060,14 +1207,18 @@ function startCatalogGeneration() {
         const card = document.createElement('div');
         card.className = 'catalog-card';
 
+        const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+        card.id = `catalog-card-${safeKey}`;
+
         const content = status === 'success'
             ? `<div class="catalog-image-wrapper">
                     <img src="${imageUrl}" alt="${key}" class="catalog-image loaded" />
                </div>`
-            : `<div class="catalog-image-wrapper" style="display:flex;align-items:center;justify-content:center;">
+            : `<div class="catalog-image-wrapper" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;">
                     <div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px;">
                         Failed: ${status}${error ? '<br/>' + error.substring(0,80) : ''}
                     </div>
+                    <button onclick="retryCatalogImage('${key}')" style="padding:6px 16px;background:var(--gold);color:#000;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600;">Retry</button>
                </div>`;
 
         card.innerHTML = content + `
@@ -1119,17 +1270,48 @@ function startCatalogGeneration() {
     };
 }
 
-async function regenerateCatalogImage(index) {
-    // Not wired in UI yet; keep as a small helper for future work.
+async function retryCatalogImage(key) {
+    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const card = document.getElementById(`catalog-card-${safeKey}`);
+    if (!card) return;
+
+    // Show loading state
+    const wrapper = card.querySelector('.catalog-image-wrapper');
+    if (wrapper) {
+        wrapper.innerHTML = `<div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px;"><div class="spinner" style="margin:0 auto 8px;"></div>Retrying...</div>`;
+    }
+    const footer = card.querySelector('.catalog-card-footer span:last-child');
+    if (footer) footer.textContent = 'retrying';
+
     try {
         const formData = new FormData();
         formData.append('session_id', state.sessionId);
-        formData.append('image_key', index);
+        formData.append('image_key', key);
         const res = await fetch('/api/regenerate', { method: 'POST', body: formData });
         const data = await res.json();
-        return data.success ? data.image_url : null;
-    } catch (_) {
-        return null;
+
+        if (data.success && data.image_url) {
+            // Update card with the new image
+            if (wrapper) {
+                wrapper.innerHTML = `<img src="${data.image_url}?t=${Date.now()}" alt="${key}" class="catalog-image loaded" />`;
+            }
+            if (footer) footer.textContent = 'success';
+            // Update state so restoreCatalogGrid works if user navigates back
+            const existing = state.catalogImages.find(i => i.key === key);
+            if (existing) { existing.status = 'success'; existing.image_url = data.image_url; }
+            if (data.cost) updateCostDisplay([data.cost], null);
+        } else {
+            // Show error with retry button again
+            if (wrapper) {
+                wrapper.innerHTML = `<div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px;">Failed: ${data.error || 'unknown'}</div><button onclick="retryCatalogImage('${key}')" style="padding:6px 16px;background:var(--gold);color:#000;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600;margin-top:8px;">Retry</button>`;
+            }
+            if (footer) footer.textContent = 'failed';
+        }
+    } catch (err) {
+        if (wrapper) {
+            wrapper.innerHTML = `<div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px;">Network error</div><button onclick="retryCatalogImage('${key}')" style="padding:6px 16px;background:var(--gold);color:#000;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600;margin-top:8px;">Retry</button>`;
+        }
+        if (footer) footer.textContent = 'failed';
     }
 }
 
@@ -1156,9 +1338,11 @@ function restoreCatalogGrid() {
     }
 
     state.catalogImages.forEach(data => {
+        const card = document.createElement('div');
+        card.className = 'catalog-card';
+        const safeKey = (data.key || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        card.id = `catalog-card-${safeKey}`;
         if (data.status === 'success') {
-            const card = document.createElement('div');
-            card.className = 'catalog-card';
             card.innerHTML = `<div class="catalog-image-wrapper">
                 <img src="${data.image_url}" alt="${data.key}" class="catalog-image loaded" />
             </div>
@@ -1166,8 +1350,17 @@ function restoreCatalogGrid() {
                 <span style="color:var(--text-secondary);font-size:12px;">${data.key}</span>
                 <span style="color:var(--text-muted);font-size:12px;">success</span>
             </div>`;
-            grid.appendChild(card);
+        } else {
+            card.innerHTML = `<div class="catalog-image-wrapper" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;">
+                <div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px;">Failed: ${data.status || 'failed'}</div>
+                <button onclick="retryCatalogImage('${data.key}')" style="padding:6px 16px;background:var(--gold);color:#000;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600;">Retry</button>
+            </div>
+            <div class="catalog-card-footer">
+                <span style="color:var(--text-secondary);font-size:12px;">${data.key}</span>
+                <span style="color:var(--text-muted);font-size:12px;">${data.status || 'failed'}</span>
+            </div>`;
         }
+        grid.appendChild(card);
     });
 
     if (progressFill) progressFill.style.width = '100%';
@@ -1199,12 +1392,227 @@ async function downloadCatalog() {
     }
 }
 
+// ── Scratch Mode ──────────────────────────────────────────────────────────
+
+function selectMode(mode) {
+    state.flowMode = mode;
+
+    const cardCompetitor = document.getElementById('mode-card-competitor');
+    const cardScratch = document.getElementById('mode-card-scratch');
+    const competitorFlow = document.getElementById('competitor-flow');
+    const scratchFlow = document.getElementById('scratch-flow');
+    const step1Nav = document.getElementById('step1-nav');
+
+    // Update card selection
+    cardCompetitor.classList.toggle('selected', mode === 'competitor');
+    cardScratch.classList.toggle('selected', mode === 'scratch');
+
+    if (mode === 'competitor') {
+        competitorFlow.style.display = 'block';
+        scratchFlow.style.display = 'none';
+        step1Nav.style.display = 'flex';
+        validateStep1();
+    } else {
+        competitorFlow.style.display = 'none';
+        scratchFlow.style.display = 'block';
+        step1Nav.style.display = 'none';
+    }
+}
+
+function selectCategory(el) {
+    document.querySelectorAll('#category-pills .scratch-pill').forEach(p => p.classList.remove('selected'));
+    el.classList.add('selected');
+    state.scratchCategory = el.dataset.value;
+}
+
+function selectProductType(el) {
+    document.querySelectorAll('#product-pills .scratch-pill').forEach(p => p.classList.remove('selected'));
+    el.classList.add('selected');
+    state.scratchProductType = el.dataset.value;
+}
+
+async function initScratchFlow() {
+    const btn = document.getElementById('btn-scratch-continue');
+    setButtonLoading('btn-scratch-continue', true, 'Loading template...');
+    clearStatus(1);
+
+    // Generate a session ID if we don't have one yet
+    if (!state.sessionId) {
+        setSessionId(crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+    }
+
+    const formData = new FormData();
+    formData.append('session_id', state.sessionId);
+    formData.append('category', state.scratchCategory);
+    formData.append('product_type', state.scratchProductType);
+
+    try {
+        const res = await fetch('/api/scratch/init', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.success) {
+            state.scratchQuestions = data.question_groups || [];
+            state.scratchSlotMeta = data.catalog_slots || [];
+            // Default: all slots selected
+            state.scratchSelectedSlots = state.scratchSlotMeta.map(s => s.slot_id);
+            state.maxCompletedStep = Math.max(state.maxCompletedStep, 1);
+            // Update step 2 button label for scratch mode
+            const step2Btn = document.getElementById('btn-step2-next');
+            if (step2Btn) step2Btn.textContent = 'Continue';
+            goToStep(2);
+        } else {
+            showStatus(1, data.error || 'Failed to load template.', 'error');
+        }
+    } catch (err) {
+        showStatus(1, 'Network error. Is the server running?', 'error');
+    } finally {
+        setButtonLoading('btn-scratch-continue', false, 'Continue');
+    }
+}
+
+function renderSlotSelector(slots) {
+    const container = document.getElementById('scratch-slot-selector');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const label = document.createElement('div');
+    label.className = 'scratch-group-header';
+    label.style.marginTop = '4px';
+    label.textContent = 'Select Images to Generate';
+    container.appendChild(label);
+
+    const hint = document.createElement('p');
+    hint.className = 'step-description';
+    hint.style.marginBottom = '16px';
+    hint.textContent = 'All images are selected by default. Deselect any you don\'t need to reduce generation time and cost.';
+    container.appendChild(hint);
+
+    const grid = document.createElement('div');
+    grid.className = 'slot-selector-grid';
+
+    slots.forEach(slot => {
+        const isSelected = state.scratchSelectedSlots.includes(slot.slot_id);
+
+        const card = document.createElement('label');
+        card.className = 'slot-card' + (isSelected ? ' selected' : '');
+        card.dataset.slotId = slot.slot_id;
+
+        card.innerHTML = `
+            <input type="checkbox" class="slot-checkbox" data-slot-id="${slot.slot_id}" ${isSelected ? 'checked' : ''} hidden />
+            <div class="slot-card-check">${isSelected ? '✓' : ''}</div>
+            <div class="slot-card-body">
+                <div class="slot-card-name">${slot.name}</div>
+                <div class="slot-card-tagline">${slot.tagline}</div>
+            </div>
+        `;
+
+        card.addEventListener('click', () => {
+            const cb = card.querySelector('.slot-checkbox');
+            cb.checked = !cb.checked;
+            const sid = slot.slot_id;
+            if (cb.checked) {
+                if (!state.scratchSelectedSlots.includes(sid)) {
+                    state.scratchSelectedSlots.push(sid);
+                }
+            } else {
+                state.scratchSelectedSlots = state.scratchSelectedSlots.filter(x => x !== sid);
+            }
+            card.classList.toggle('selected', cb.checked);
+            card.querySelector('.slot-card-check').textContent = cb.checked ? '✓' : '';
+            // Update counter
+            updateSlotCount();
+        });
+
+        grid.appendChild(card);
+    });
+
+    container.appendChild(grid);
+
+    const counter = document.createElement('div');
+    counter.id = 'slot-count-label';
+    counter.className = 'slot-count-label';
+    container.appendChild(counter);
+    updateSlotCount();
+}
+
+function updateSlotCount() {
+    const el = document.getElementById('slot-count-label');
+    if (el) {
+        const n = state.scratchSelectedSlots.length;
+        el.textContent = `${n} image${n !== 1 ? 's' : ''} selected`;
+    }
+}
+
+function renderScratchQuestions(questionGroups) {
+    const container = document.getElementById('scratch-question-groups');
+    if (!container) return;
+    container.innerHTML = '';
+
+    questionGroups.forEach(group => {
+        // Group header
+        const header = document.createElement('div');
+        header.className = 'scratch-group-header';
+        header.textContent = group.group_label;
+        container.appendChild(header);
+
+        // Question rows
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'scratch-group-body';
+        (group.questions || []).forEach(q => {
+            groupDiv.appendChild(makeQuestionRow(q, false));
+        });
+        container.appendChild(groupDiv);
+    });
+}
+
+async function submitScratchAnswers() {
+    const textAnswers = {};
+    const imageEntries = [];
+
+    for (const [k, v] of Object.entries(state.answers)) {
+        if (v instanceof File) {
+            imageEntries.push({ qid: k, file: v });
+        } else if (v !== null && v !== undefined) {
+            textAnswers[k] = v;
+        }
+    }
+
+    const formData = new FormData();
+    formData.append('session_id', state.sessionId);
+    formData.append('answers_json', JSON.stringify(textAnswers));
+    formData.append('image_qids_json', JSON.stringify(imageEntries.map(e => e.qid)));
+    formData.append('selected_slots_json', JSON.stringify(state.scratchSelectedSlots));
+    imageEntries.forEach(e => formData.append('image_files', e.file));
+
+    try {
+        const res = await fetch('/api/scratch/answers', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!data.success) {
+            showStatus(3, data.error || 'Failed to save answers.', 'error');
+            return false;
+        }
+        return true;
+    } catch (err) {
+        showStatus(3, 'Network error. Please try again.', 'error');
+        return false;
+    }
+}
+
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     initUploadZone('competitor-upload-zone', 'competitor-files', 'competitor-preview-grid', 'competitorFiles');
     initUploadZone('product-upload-zone', 'product-files', 'product-preview-grid', 'productFiles');
+
+    // Scratch pill click handlers
+    document.querySelectorAll('#category-pills .scratch-pill').forEach(el => {
+        el.addEventListener('click', () => selectCategory(el));
+    });
+    document.querySelectorAll('#product-pills .scratch-pill').forEach(el => {
+        el.addEventListener('click', () => selectProductType(el));
+    });
+
     initNavigation();
     initStepClicks();
-    goToStep(1);
+    tryRestoreSession().then(restored => { if (!restored) goToStep(1); });
 });

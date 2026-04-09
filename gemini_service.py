@@ -116,6 +116,48 @@ def _parse_json_response(text: str):
     return json.loads(cleaned)
 
 
+async def detect_product_color(image_url_path: str) -> dict:
+    """
+    Use Gemini vision to detect the precise color/finish of the product in the image.
+    Returns {"color": str, "description": str} where:
+      - color: short 1-3 word name suitable for use in prompts (e.g. "Star White", "Warm Ivory", "Matte Black")
+      - description: one sentence describing the exact hue, tone, and finish
+    """
+    client = get_client()
+
+    image_part = _load_image_for_gemini(image_url_path)
+
+    prompt = """You are a product color analyst. Look carefully at the product in this image.
+
+Identify the EXACT color and finish of the ceramic/material surface.
+
+Reply in this exact JSON format with no extra text:
+{
+  "color": "<short color name, 1-3 words, suitable for a product label. Examples: Star White, Warm Ivory, Almond, Biscuit, Cool White, Matte Black, Charcoal Grey, Sand Beige>",
+  "description": "<one sentence describing the exact hue, undertone, and surface finish. Be precise: e.g. 'A warm, slightly off-white with creamy yellow undertones and a glossy ceramic glaze.' or 'A cool, bright optical white with a semi-gloss surface finish.'>"
+}
+
+Only describe the product color — ignore the background."""
+
+    try:
+        response = await client.aio.models.generate_content(
+            model=MODEL_ANALYSIS,
+            contents=[prompt, image_part],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=200,
+            ),
+        )
+        text = response.text or ""
+        result = _parse_json_response(text)
+        return {
+            "color": result.get("color", "").strip(),
+            "description": result.get("description", "").strip(),
+        }
+    except Exception as e:
+        return {"color": "", "description": "", "error": str(e)}
+
+
 def _extract_cost(response, model_name: str) -> dict:
     """Extract token usage and calculate cost from a Gemini response."""
     cost_info = {
@@ -560,7 +602,7 @@ SECTION A — PRODUCT LOCKED SPECS:
 Write a dense, visual, natural-language description of the product (~200 words). Cover:
 - Exact product type and category
 - Brand name (if visible or mentioned)
-- Shape, form factor, silhouette — describe with precision (e.g., "elongated oval bowl, smooth curved body")
+- CORE GEOMETRY & SILHOUETTE: Describe the exact, objective 3D shape with extreme precision. Assume the product has a highly unique, non-standard shape. If it is a blocky wedge, say so. If it has sharp angles, say so. DO NOT use generic terms like "standard toilet" or "modern design". You must describe the literal physical form (e.g., "solid rectangular block base with a steep 45-degree slanted backrest, absolutely no curved bowl visible, sharp geometric corners").
 - Color, finish, surface texture (e.g., "glossy pure white ceramic, high-gloss, mirror-like surface sheen")
 - Material and construction details
 - Key design features visible in the images
@@ -569,7 +611,7 @@ Write a dense, visual, natural-language description of the product (~200 words).
 - Base/mounting style
 
 Study the reference images carefully and describe what you SEE, not what you assume.
-Use the technical attributes to add precision, but always prioritize visual accuracy from the images.
+Use the technical attributes to add precision, but always prioritize visual accuracy from the images. IF the image shows a bizarre or unconventional shape, DESCRIBE IT EXACTLY AS IT IS. Do not normalize it to a standard product.
 
 SECTION B — PHOTOGRAPHY STYLE LOCKED:
 Based on the product category, determine the ideal premium photography environment and write locked style parameters:
@@ -587,12 +629,13 @@ Define a premium typography system that ALL text-containing catalog images MUST 
 - Font: Thin/light-weight elegant sans-serif (like Montserrat Light, Lato Light, or SF Pro Display Thin) — NOT bold, NOT heavy
 - Headings: Thin uppercase sans-serif, generous letter-spacing (tracking), centered/symmetric placement
 - Body/label text: Light weight, same font family, slightly smaller
-- Color scheme: White or warm off-white (#F5F0E8) text. For dark backgrounds use white; for light backgrounds use charcoal (#2A2A2A)
-- Accent: Subtle warm gold/amber (#C4A265) for divider lines, callout connectors, or highlight borders — used sparingly
+- Color scheme: Warm off-white text on dark backgrounds; dark charcoal text on light backgrounds
+- Accent: Subtle warm gold color for divider lines, callout connectors, or highlight borders — used sparingly
 - Callout lines: Thin (1-2px), straight, connecting product features to labels — elegant, not cluttered
 - Icons: Minimal line-art style, monochrome, matching text color — NOT colorful, NOT filled/heavy
 - Layout: Symmetric and balanced — headings centered, callouts evenly distributed, equal spacing
 - ALL infographic images MUST use this IDENTICAL typography — same font weight, same colors, same icon style
+- CRITICAL: These are styling instructions only. When generating images, NEVER render typography spec values (font sizes, CSS color codes, font weight numbers, spacing values) as literal visible text in the image.
 
 Format your output EXACTLY like this (plain text, not JSON):
 
@@ -836,7 +879,8 @@ def _extract_first_generated_image(response) -> Image.Image | None:
         for part in getattr(response, "parts", []) or []:
             if getattr(part, "inline_data", None) is not None:
                 return part.as_image()
-    except Exception:
+    except Exception as e:
+        print(f"[GEMINI] Image extraction failed: {type(e).__name__}: {e}")
         return None
     return None
 
@@ -903,27 +947,56 @@ This is the VISUAL ANCHOR — all other catalog images will reference this for c
 
 {context_block}
 
-CRITICAL REQUIREMENTS:
-- The product must be the SOLE subject — exactly ONE product unit, never duplicated or mirrored
-- Placed in a premium environment appropriate for this product category (the master context defines the exact environment)
-- Warm natural daylight streaming from the left side at ~45 degrees, creating subtle soft shadows on the right
-- Hyperrealistic PHOTOGRAPH — NOT a 3D render, NOT an illustration, NOT CGI
-- DSLR-quality: sharp focus on the product, gentle depth-of-field blur on the background
-- Camera angle: 3/4 front view, slightly elevated — showing the product's best angle with full dimensionality
-- Full product visible with ~10% breathing room on all sides
-- Amazon A+ listing quality — top 0.01% of product images in this category
-- NO text, NO watermarks, NO branding, NO logos anywhere in the image
-- NOTE: The reference product images provided may contain watermarks or brand overlays — IGNORE them entirely; reproduce only the physical product shape, color, and design details
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRODUCT FIDELITY & GEOMETRY — ABSOLUTE TOP PRIORITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Study the reference product images PIXEL BY PIXEL before generating.
+- WARNING: The reference image may depict a HIGHLY UNCONVENTIONAL or NON-STANDARD product geometry (e.g., a blocky rectangular wedge instead of a curved toilet). 
+- YOU MUST IGNORE ALL GENERIC PRECONCEPTIONS OF WHAT THIS PRODUCT "SHOULD" LOOK LIKE.
+- You must STRICTLY REPLICATE the EXACT physical geometry, silhouette, sharp angles, slants, and structural proportions of the product shown in the reference image.
+- Do NOT normalize the product to a standard curve or archetype. If it's a solid block, generate a solid block.
+- The viewer must look at the generated image and the reference and recognize the exact same unconventional physical geometric shape.
 
-PRODUCT FIDELITY (MOST IMPORTANT):
-- Study the reference product images PIXEL BY PIXEL before generating
-- The generated product must be INDISTINGUISHABLE from the reference — same exact silhouette, same proportions, same design language
-- Reproduce EVERY detail: exact shape, proportions, design language, surface finish, functional elements, hardware placement, edge treatments
-- If the reference shows a specific ratio between parts (e.g., component proportions), maintain that EXACT ratio
-- If the reference shows rounded corners vs sharp corners, curved vs angular surfaces — match it precisely
-- DO NOT use a generic product shape. The reference images ARE the ground truth
-- Common mistakes to AVOID: wrong proportions, generic/default shapes, missing or altered design details, different hardware/buttons, smoothing over distinctive features
-- The viewer should look at the generated image and the reference and believe they are the SAME physical product photographed in a different setting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUBJECT: PRODUCT IS THE DOMINANT FOCAL POINT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- The product is the DOMINANT and PRIMARY subject — it must fill roughly 65–75% of the frame height
+- The product is tack-sharp; everything behind it is softly out of focus (shallow depth of field)
+- If a reference product image contains messy props or backgrounds — IGNORE THEM — reproduce only the product
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKGROUND: PREMIUM BATHROOM — MUST READ UNMISTAKABLY AS A BATHROOM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- The background MUST be instantly recognizable as a real premium bathroom — NOT a plain wall, NOT a studio backdrop, NOT an abstract void
+- Use ONE of these rich bathroom settings (choose whichever creates the most premium, editorial feel):
+  Option A: Dark luxury spa bathroom — tall charcoal/graphite textured concrete or dark natural stone walls, large-format dark slate floor tiles. In the background: a built-in rectangular wall niche with a single folded white face towel inside it, and one or two minimalist recessed ceiling spotlights casting warm pools of light.
+  Option B: Bright marble bathroom — floor-to-ceiling large-format warm white Carrara marble or travertine wall slabs, polished marble floor. In the background: a chrome towel bar on the wall with a single neatly folded white towel draped over it, and a glimpse of a ceiling-mounted rain shower head at the top edge.
+  Option C: Warm contemporary bathroom — warm sand/greige large-format ceramic wall tiles with a subtle surface texture, light travertine or terrazzo floor. In the background: a wall-hung vanity unit in matte oak/walnut partially visible at the edge of frame, and warm indirect LED lighting in a recessed ceiling alcove above.
+- The background elements may exist naturally as part of the real bathroom environment — they do not need to be blurred out
+- The product is the visual hero through its placement (center-frame, front), its sharp detail, and the lighting focused on it — not through artificial background blur
+- The floor-wall junction must be clearly visible to ground the product in a real room
+- Atmospheric lighting interacting with surfaces: tile sheen, stone texture, material grain
+- The overall mood: a premium bathroom showroom or 5-star hotel suite bathroom
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LIGHTING & CAMERA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Key light: warm soft light from upper-left at ~45°, creating a gentle shadow on the right side of the product — warm and flattering, not harsh studio strobe
+- Fill light: very soft reflector fill from the right side to reduce shadow depth — no hard secondary shadows
+- Rim/accent: subtle warm rim light from behind-right catching the product's edges to separate it from the background
+- Camera angle: 3/4 front-left view, camera slightly elevated (15°–25° above product level) — showing the front face, left side, and top
+- Depth of field: product is razor sharp; background is softly blurred (bokeh)
+- Aspect ratio: 1:1 square
+- Quality: hyperrealistic editorial DSLR photograph — NOT a 3D render, NOT CGI, NOT an illustration
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ABSOLUTE PROHIBITIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- NO text, NO watermarks, NO brand logos, NO price labels visible anywhere
+- NO cluttered accessories in the foreground — the product must have clear breathing room
+- NO other toilet / plumbing product in the frame
+- Background context elements (niche, towel, vanity edge) must be out-of-focus and background only — never in the foreground or competing with the product
+- Amazon A+ listing quality — editorial, premium, top 0.1% of product photography
 """
 
     contents: list = [prompt]
@@ -934,36 +1007,30 @@ PRODUCT FIDELITY (MOST IMPORTANT):
 
     last_err = None
     for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
-        # Try with higher resolution first, fall back if model rejects image_size
-        for img_config in [
-            types.ImageConfig(aspect_ratio="1:1", image_size="2K"),
-            types.ImageConfig(aspect_ratio="1:1"),
-        ]:
-            try:
-                response = await client.aio.models.generate_content(
-                    model=attempt_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
-                        image_config=img_config,
-                    ),
-                )
-                cost = _extract_cost(response, attempt_model)
-                cost["operation"] = "Hero Image Generation"
+        img_config = types.ImageConfig(aspect_ratio="1:1")
+        print(f"[HERO] Trying model={attempt_model}")
+        try:
+            response = await client.aio.models.generate_content(
+                model=attempt_model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                    image_config=img_config,
+                ),
+            )
+            print(f"[HERO] Response received from {attempt_model}")
+            cost = _extract_cost(response, attempt_model)
+            cost["operation"] = "Hero Image Generation"
 
-                ok = _save_generated_image(out_path, response)
-                if not ok:
-                    raise RuntimeError("Hero generation returned no image part")
+            ok = _save_generated_image(out_path, response)
+            if not ok:
+                raise RuntimeError("Hero generation returned no image part")
 
-                hero_url = f"/outputs/{session_id}/hero/hero.png"
-                return hero_url, cost
-            except Exception as e:
-                err_str = str(e).lower()
-                if "image_size" in err_str or "image size" in err_str:
-                    print(f"[GEMINI] image_size not supported by {attempt_model}, retrying without it")
-                    continue  # try without image_size
-                last_err = e
-                break  # move to fallback model
+            hero_url = f"/outputs/{session_id}/hero/hero.png"
+            return hero_url, cost
+        except Exception as e:
+            print(f"[HERO] {attempt_model} failed: {type(e).__name__}: {e}")
+            last_err = e
 
     raise RuntimeError(f"Hero generation failed: {type(last_err).__name__}: {last_err}")
 
@@ -1006,9 +1073,10 @@ For all other attributes, match the competitor image's approach and visual style
 """
 
     # Environment override — lifestyle/hero/feature images must use the hero's room.
-    # Functional diagrams and dimension sheets use a clean neutral backdrop so that
-    # X-ray overlays, cutaway renders, and dimension lines read clearly.
-    _is_diagram = image_type in ("functional", "dimensions", "infographic")
+    # Only true technical drawings (functional cross-sections, dimension sheets) use neutral backgrounds.
+    # Infographic slots have been updated to show the real product in a real setting, so they also
+    # get the hero environment rule.
+    _is_diagram = image_type in ("functional", "dimensions")
     hero_env_override = ""
     if reference_intent_image_url:
         if _is_diagram:
@@ -1027,15 +1095,36 @@ ENVIRONMENT OVERRIDE (ABSOLUTE RULE — applies to every lifestyle/hero/feature 
 - Use ONLY the environment, wall colour/material, floor, and lighting from Image 1 (HERO)
 - Image 2 is a reference ONLY for composition purpose and layout — NEVER for environment or background
 """
+    else:
+        # Scratch mode (no competitor reference) — still enforce environment consistency from Hero
+        if _is_diagram:
+            hero_env_override = """
+BACKGROUND FOR THIS DIAGRAM / INFOGRAPHIC IMAGE:
+- Use a CLEAN, NEUTRAL background (soft warm white or light warm grey) so annotations, callout lines, and dimension text read clearly
+- The PRODUCT must still look photorealistic and IDENTICAL to IMAGE 1 (HERO) in shape, color, and finish
+- Do NOT change or invent the product appearance
+"""
+        else:
+            hero_env_override = """
+ENVIRONMENT CONSISTENCY — HIGHEST PRIORITY RULE (overrides any background color mentioned in the slot description below):
+- Carefully study IMAGE 1 (HERO): identify the exact wall material and color, the exact floor material and color, and the ambient lighting quality
+- The background of THIS image MUST use that EXACT SAME wall and floor setting — same tiles/stone/material, same color, same surface texture
+- If the HERO shows dark charcoal stone walls + slate floor → use dark charcoal stone walls + slate floor here
+- If the HERO shows white marble walls + polished marble floor → use white marble walls + polished marble floor here
+- If the HERO shows warm sand ceramic tiles + travertine floor → use warm sand tiles + travertine floor here
+- This rule OVERRIDES any background color or room style specified in the image description below — the hero's room is law
+- The product must look IDENTICAL to IMAGE 1 (HERO): same shape, same color, same finish, same proportions
+- Goal: a buyer looking at ALL catalog images must feel they are in the SAME bathroom in every single image
+"""
 
     # Build the image reference instructions based on what we have
     if reference_intent_image_url:
         image_ref_block = """You are given TWO reference images:
-- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. The generated image must show this EXACT product — same shape, color, proportions, design details, and surface finish.
+- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. You must strictly copy this EXACT physical product — same geometric shape, same structural silhouette, color, design details, and surface finish. Do not normalize or round off unique corners or blocks.
 - IMAGE 2 (COMPETITOR INTENT): This shows what this catalog slot needs to COMMUNICATE — the purpose, composition, information, and visual story. Recreate the SAME PURPOSE for our product from Image 1."""
     else:
         image_ref_block = """You are given ONE reference image:
-- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. The generated image must show this EXACT product — same shape, color, proportions, design details, and surface finish.
+- IMAGE 1 (HERO): This is the PRODUCT VISUAL ANCHOR. You must strictly copy this EXACT physical product — same geometric shape, same structural silhouette, color, design details, and surface finish. Do not normalize or round off unique corners or blocks.
 Use the slot instructions below to determine what this catalog image should communicate."""
 
     prompt = f"""Generate ONE catalog image for an Amazon A+ product listing.
@@ -1080,12 +1169,34 @@ TYPOGRAPHY (ABSOLUTE RULE — for ALL images with any text, callouts, or labels)
 - Font: Thin/light-weight elegant sans-serif (Montserrat Light / Lato Light style) — NOT bold, NOT heavy, NOT the competitor's style
 - Headings: UPPERCASE, thin weight, generous letter-spacing, centered symmetrically at top
 - Body/label text: Light weight, same font family, clean and minimal
-- Text color: White or warm off-white (#F5F0E8) on dark overlays; charcoal (#2A2A2A) on light backgrounds
-- Accent color: Warm gold/amber (#C4A265) — use ONLY for thin divider lines, callout connector lines, or subtle highlight borders
+- Text color: White or warm off-white on dark overlays; charcoal on light backgrounds
+- Accent color: Warm gold/amber — use ONLY for thin divider lines, callout connector lines, or subtle highlight borders
 - Callout lines: Thin (1-2px), straight, elegant — connecting product features to their labels
 - Icons: Minimal line-art, monochrome, matching text color — NOT colorful emoji-style, NOT heavy filled icons
 - Layout: SYMMETRIC and balanced — even spacing, centered headings, evenly distributed callouts on left/right
 - This typography MUST match ALL other infographic images in this catalog — identical font, weight, colors, icon style
+
+CRITICAL ANTI-LEAK RULE — TYPOGRAPHY INSTRUCTIONS ARE FOR YOU, NOT FOR THE IMAGE:
+- This prompt contains styling notes that describe HOW text should look (e.g. "small gold uppercase label", "large thin warm-white text", "muted grey sub-label").
+- These styling descriptions MUST NEVER appear as literal visible text in the generated image.
+- The pattern that MUST be avoided: if the prompt says «Label X» (style description), you must render ONLY «Label X» — NEVER the style description itself.
+- CONCRETE EXAMPLES OF WHAT IS FORBIDDEN as image text:
+  ✗ "SMALL GOLD UPPERCASE: INSTALLATION GUIDE" — the prefix "SMALL GOLD UPPERCASE:" must NOT appear
+  ✗ "Large, thin charcoal: S-Trap · 220 mm" — the prefix "Large, thin charcoal:" must NOT appear
+  ✗ "Small muted grey: Compatible with standard plumbing" — the prefix must NOT appear
+  ✗ "Gold label: ROUGH-IN" — the prefix must NOT appear
+  ✘ Font sizes like "14px", "11px", hex codes like "#C4A265", weight numbers like "weight 300"
+- WHAT YOU MUST DO: Strip all styling metadata. Render ONLY the bare content words.
+  ✓ Correct: "INSTALLATION GUIDE" (in the gold uppercase style)
+  ✓ Correct: "S-Trap · 220 mm ROUGH-IN" (in large thin dark style)
+  ✓ Correct: "Compatible with standard Indian plumbing" (in small muted text)
+- TREAT EVERY COLON IN A STYLE INSTRUCTION AS: the colon separates the style description (ignore it) from the content (render only this part).
+
+PHOTOREALISTIC PRODUCT BASE (APPLIES TO ALL SLOTS):
+- EVERY catalog image — including diagrams, infographics, dimension sheets, and feature panels — MUST show the actual photorealistic toilet product (identical to Image 1 / HERO) as the foundational visual element
+- Technical diagrams and infographic overlays MUST be rendered ON TOP OF the real product — not on an empty silhouette, not on a pure line drawing, not on a placeholder shape
+- The product should look photographically real; annotations, callout lines, cutaway reveals, and overlay text are layered on top of or adjacent to the real product
+- The ONLY exception: the DIMENSIONS slot may use a clean technical side-elevation line drawing if a photorealistic product would obscure the measurement callouts
 
 WATERMARK & BRANDING WARNING (ABSOLUTE RULE):
 - Image 2 (the competitor reference) likely contains a brand watermark, logo, or diagonal text overlay (e.g., brand name printed across the image)
@@ -1117,34 +1228,29 @@ QUALITY STANDARDS:
 
     last_err = None
     for attempt_model in [MODEL_IMAGE_PRIMARY, MODEL_IMAGE_FALLBACK]:
-        for img_config in [
-            types.ImageConfig(aspect_ratio="1:1", image_size="2K"),
-            types.ImageConfig(aspect_ratio="1:1"),
-        ]:
-            try:
-                response = await client.aio.models.generate_content(
-                    model=attempt_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
-                        image_config=img_config,
-                    ),
-                )
-                cost = _extract_cost(response, attempt_model)
-                cost["operation"] = "Catalog Image Generation"
+        img_config = types.ImageConfig(aspect_ratio="1:1")
+        print(f"[CATALOG] Trying model={attempt_model} key={image_key}")
+        try:
+            response = await client.aio.models.generate_content(
+                model=attempt_model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                    image_config=img_config,
+                ),
+            )
+            print(f"[CATALOG] Response received from {attempt_model} key={image_key}")
+            cost = _extract_cost(response, attempt_model)
+            cost["operation"] = "Catalog Image Generation"
 
-                ok = _save_generated_image(out_path, response)
-                if not ok:
-                    raise RuntimeError("Catalog generation returned no image part")
+            ok = _save_generated_image(out_path, response)
+            if not ok:
+                raise RuntimeError("Catalog generation returned no image part")
 
-                image_url = f"/outputs/{session_id}/catalog/{image_key}.png"
-                return image_url, cost
-            except Exception as e:
-                err_str = str(e).lower()
-                if "image_size" in err_str or "image size" in err_str:
-                    print(f"[GEMINI] image_size not supported by {attempt_model}, retrying without it")
-                    continue
-                last_err = e
-                break
+            image_url = f"/outputs/{session_id}/catalog/{image_key}.png"
+            return image_url, cost
+        except Exception as e:
+            print(f"[CATALOG] {attempt_model} failed key={image_key}: {type(e).__name__}: {e}")
+            last_err = e
 
     raise RuntimeError(f"Catalog generation failed: {type(last_err).__name__}: {last_err}")

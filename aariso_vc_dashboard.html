@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aariso — Pre-Seed Market Intelligence</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap');
+    
+    :root {
+      /* Base Dark Theme (Anthropic Spec) */
+      --bg-page:        #0a0a0f;
+      --bg-card:        #12121a;
+      --bg-card-hover:  #1a1a26;
+      --border:         #1e1e2e;
+      --border-em:      #2a2a3e;
+      --text-primary:   #e8e8f0;
+      --text-secondary: #8888aa;
+      --text-tertiary:  #5a5a7a;
+
+      /* Purple - Primary Brand, AI/Intelligence */
+      --purple-50:  #EEEDFE; --purple-100: #CECBF6; --purple-200: #AFA9EC;
+      --purple-400: #7F77DD; --purple-600: #534AB7; --purple-800: #3C3489; --purple-900: #26215C;
+
+      /* Teal - Success, Growth */
+      --teal-50:  #E1F5EE; --teal-100: #9FE1CB; --teal-200: #5DCAA5;
+      --teal-400: #1D9E75; --teal-600: #0F6E56; --teal-800: #085041; --teal-900: #04342C;
+
+      /* Coral - Soft warnings, outlier highlights */
+      --coral-50:  #FAECE7; --coral-100: #F5C4B3; --coral-200: #F0997B;
+      --coral-400: #D85A30; --coral-600: #993C1D; --coral-800: #712B13; --coral-900: #4A1B0C;
+
+      /* Gray - Neutral, structural */
+      --gray-50:  #F1EFE8; --gray-100: #D3D1C7; --gray-200: #B4B2A9;
+      --gray-400: #888780; --gray-600: #5F5E5A; --gray-800: #444441; --gray-900: #2C2C2A;
+
+      /* Amber - Caution, concept */
+      --amber-50:  #FAEEDA; --amber-100: #FAC775; --amber-200: #EF9F27;
+      --amber-400: #BA7517; --amber-600: #854F0B; --amber-800: #633806; --amber-900: #412402;
+
+      /* Red - Error, shutdown */
+      --red-50:  #FCEBEB; --red-100: #F7C1C1; --red-200: #F09595;
+      --red-400: #E24B4A; --red-600: #A32D2D; --red-800: #791F1F; --red-900: #501313;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-color: var(--bg-page);
+      color: var(--text-primary);
+      display: flex;
+      line-height: 1.7;
+      scroll-behavior: smooth;
+      font-size: 15px; /* Anthropic body sizing */
+      font-weight: 400;
+    }
+
+    /* Standard Component Typography */
+    h1 { font-size: 22px; font-weight: 500; margin-bottom: 8px; color: var(--purple-100); }
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 12px; color: var(--purple-100); }
+    h3 { font-size: 16px; font-weight: 500; margin-bottom: 8px; color: var(--text-primary); }
+    
+    .text-sub { color: var(--text-secondary); }
+    .text-primary-accent { color: var(--purple-200); }
+
+    /* Sidebar Navigation */
+    .sidebar {
+      width: 250px;
+      height: 100vh;
+      position: fixed;
+      left: 0;
+      top: 0;
+      padding: 32px 24px;
+      border-right: 1px solid var(--border);
+      background: var(--bg-page);
+      overflow-y: auto;
+      z-index: 100;
+    }
+
+    .sidebar-brand { margin-bottom: 40px; }
+    .sidebar-subtitle { font-size: 13px; color: var(--purple-400); font-weight: 500;}
+
+    nav ul { list-style: none; padding: 0; margin: 0; }
+    nav li { margin-bottom: 4px; }
+    nav a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 14px;
+      display: block;
+      padding: 8px 12px;
+      border-radius: 6px;
+      transition: all 0.2s ease;
+      border-left: 3px solid transparent;
+    }
+    nav a:hover, nav a.active {
+      background: var(--bg-card-hover);
+      border-left: 3px solid var(--purple-400);
+      color: var(--purple-200);
+      border-radius: 0 8px 8px 0;
+    }
+
+    /* Main Content Area */
+    main {
+      margin-left: 250px;
+      padding: 40px 60px;
+      max-width: 1200px;
+      width: 100%;
+    }
+
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 40px;
+      margin-bottom: 40px;
+      
+      /* Micro-animation prep setup */
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+
+    .panel.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .panel-header {
+      border-bottom: 1px solid var(--border-em);
+      padding-bottom: 16px;
+      margin-bottom: 32px;
+    }
+    .panel h2::before {
+      content: '';
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--purple-400);
+      margin-right: 12px;
+      vertical-align: middle;
+    }
+
+    /* Layout Grids */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    
+    .data-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      transition: background 0.2s;
+    }
+    .data-card:hover {
+      background: var(--bg-card-hover);
+    }
+    
+    /* Stat / Metric Display */
+    .stat-label { font-size: 13px; color: var(--text-secondary); margin-top: 8px; line-height: 1.5; }
+    .stat-value { font-size: 28px; font-weight: 500; color: var(--text-primary); line-height: 1.2; }
+    .stat-accent { color: var(--purple-200); }
+
+    /* Tables */
+    .modern-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+    }
+    .modern-table th {
+      background: var(--bg-card-hover);
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 500;
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-em);
+    }
+    .modern-table td {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+    .modern-table tbody tr:hover td {
+      background: rgba(127, 119, 221, 0.04);
+    }
+    .row-highlight td {
+      background: rgba(127, 119, 221, 0.08);
+      border-bottom: 1px solid var(--purple-800);
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-red { background: var(--red-800); color: var(--red-200); border: 1px solid var(--red-600); }
+    .badge-amber { background: var(--amber-800); color: var(--amber-200); border: 1px solid var(--amber-600); }
+    .badge-green { background: var(--teal-800); color: var(--teal-200); border: 1px solid var(--teal-600); }
+    .badge-gray { background: var(--gray-800); color: var(--gray-200); border: 1px solid var(--gray-600); }
+
+    /* CSS Horizontal Bar Chart (Replaced Chart.js) */
+    .bar-chart {
+      margin-top: 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 800px;
+    }
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .bar-label {
+      width: 120px;
+      font-size: 14px;
+      color: var(--text-secondary);
+      text-align: right;
+    }
+    .bar-track-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .bar-track {
+      background: var(--border-em);
+      border-radius: 4px;
+      height: 12px;
+      flex: 1;
+      position: relative;
+    }
+    .bar-fill {
+      background: var(--purple-400);
+      border-radius: 4px;
+      height: 12px;
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+    .bar-outlier {
+      background: var(--coral-400);
+    }
+    .bar-value {
+      width: 40px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    /* Refactored Non-Overlapping Nested Circles / Pipeline for TAM/SAM/SOM */
+    .market-pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      margin: 32px 0;
+    }
+    .market-stage {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 24px;
+      border-radius: 12px;
+      border: 1px solid var(--border-em);
+      position: relative;
+    }
+    .market-stage.tam { background: rgba(89, 94, 90, 0.05); }
+    .market-stage.sam { background: rgba(29, 158, 117, 0.05); border-color: rgba(29, 158, 117, 0.3); }
+    .market-stage.som { background: rgba(127, 119, 221, 0.08); border-color: var(--purple-600); box-shadow: 0 4px 20px rgba(127, 119, 221, 0.1); }
+    
+    .stage-circle {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 500;
+      font-size: 18px;
+    }
+    .tam .stage-circle { background: var(--gray-800); color: var(--gray-200); }
+    .sam .stage-circle { background: var(--teal-800); color: var(--teal-200); }
+    .som .stage-circle { background: var(--purple-600); color: var(--purple-50); border: 2px solid var(--purple-400); }
+    
+    .stage-details h3 { margin: 0 0 4px 0; font-size: 16px; }
+    .stage-details p { margin: 0; font-size: 14px; color: var(--text-secondary); }
+    .stage-value {
+      margin-left: auto;
+      font-size: 24px;
+      font-weight: 500;
+      font-family: monospace;
+      color: var(--text-primary);
+    }
+    .som .stage-value { color: var(--purple-200); }
+
+    /* VC Cheat Sheet */
+    .cheat-sheet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 48px; }
+    .fact-item {
+      display: flex;
+      gap: 20px;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--border-em);
+      align-items: flex-start;
+    }
+    .fact-metric {
+      font-size: 22px;
+      font-weight: 500;
+      color: var(--purple-200);
+      min-width: 120px;
+      line-height: 1.3;
+    }
+    .fact-context { font-size: 14px; color: var(--text-secondary); line-height: 1.5; }
+
+    /* Price Ladder */
+    .ladder { display: flex; align-items: flex-end; gap: 16px; margin-top: 40px; height: 260px; padding-bottom: 24px; border-bottom: 1px solid var(--border-em); }
+    .ladder-bar { flex: 1; background: var(--bg-card-hover); border: 1px solid var(--border-em); border-bottom: none; border-radius: 4px 4px 0 0; position: relative; display: flex; flex-direction: column; align-items: center; padding-top: 12px; text-align: center; transition: background 0.2s; }
+    .ladder-bar.aariso { background: rgba(127, 119, 221, 0.1); border-color: var(--purple-600); }
+    .ladder-price { color: var(--text-primary); font-family: monospace; font-size: 14px; font-weight: 500; margin-bottom: 8px; }
+    .ladder-label { font-size: 12px; color: var(--text-secondary); width: 90%; line-height: 1.3; }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .sidebar { width: 220px; padding: 24px 16px; }
+      main { margin-left: 220px; padding: 32px; }
+    }
+    @media (max-width: 768px) {
+      body { flex-direction: column; }
+      .sidebar { width: 100%; height: auto; position: static; padding: 20px; border-right: none; border-bottom: 1px solid var(--border); }
+      main { margin-left: 0; padding: 20px; }
+      .grid-2, .grid-3, .cheat-sheet-grid { grid-template-columns: 1fr; }
+      .market-stage { flex-direction: column; text-align: center; }
+      .stage-value { margin-left: 0; margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <h1>Aariso</h1>
+      <div class="sidebar-subtitle">Pre-Seed Intelligence</div>
+      <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 8px;">March 2026</div>
+    </div>
+    <nav>
+      <ul id="nav-menu">
+        <li><a href="#exec-summary" class="active">Executive Summary</a></li>
+        <li><a href="#global-market">Global Market</a></li>
+        <li><a href="#india-market">India Smart Mirror</a></li>
+        <li><a href="#broader-market">Broader Market & ASP</a></li>
+        <li><a href="#premiumisation-gap">Premiumisation Gap</a></li>
+        <li><a href="#renovation-market">Renovation Budgets</a></li>
+        <li><a href="#tam-sam-som">TAM / SAM / SOM</a></li>
+        <li><a href="#competitor-graveyard">Competitor Graveyard</a></li>
+        <li><a href="#luxury-brands">Luxury Brands Matrix</a></li>
+        <li><a href="#hospitality">Luxury Hospitality</a></li>
+        <li><a href="#real-estate">Real Estate & Smart Home</a></li>
+        <li><a href="#cheat-sheet">VC Cheat Sheet</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <!-- Main Content -->
+  <main>
+
+    <!-- 1. Executive Summary -->
+    <section id="exec-summary" class="panel">
+      <div class="panel-header">
+        <h2>Executive Summary</h2>
+      </div>
+      <p style="font-size: 16px; margin-bottom: 40px; max-width: 900px; color: var(--text-primary);">
+        Aariso targets the single least-premiumised category in India's ₹78,000 Cr bathroom market — mirrors. We are building the intersection of luxury hardware, AI diagnostics, and smart home technology for B2B hospitality and premium residential.
+      </p>
+      
+      <div class="grid-3">
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">3-5%</div>
+          <div class="stat-label">Mirror premiumisation share (vs 35% for faucets) — the biggest white space.</div>
+        </div>
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">1 : 130k</div>
+          <div class="stat-label">Dermatologists per capita in India (26x worse than the US).</div>
+        </div>
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">29.1%</div>
+          <div class="stat-label">Smart home market CAGR — fastest growing in Asia-Pacific.</div>
+        </div>
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">118,000</div>
+          <div class="stat-label">Luxury hotel rooms active in India's construction pipeline.</div>
+        </div>
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">$600M+</div>
+          <div class="stat-label">Capital destroyed by failed B2C mirrors; surviving players are purely B2B.</div>
+        </div>
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">Zero</div>
+          <div class="stat-label">Smart mirrors sold by Jaquar, Grohe, Hindware, Cera, or Parryware.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Global Smart Mirror Market -->
+    <section id="global-market" class="panel">
+      <div class="panel-header">
+        <h2>Global Smart Mirror Market</h2>
+      </div>
+      <div class="grid-2">
+        <div>
+          <p class="text-sub">The consumer/residential smart mirror market sits at approximately <span class="text-primary-accent" style="font-weight: 500;">$584–$608M (2024)</span>, projecting to reach <span class="text-primary-accent" style="font-weight: 500;">$1.0–$1.4B by 2033–2034</span> at a CAGR of 8.1–8.8%.</p>
+          <ul class="text-sub" style="padding-left: 20px;">
+            <li style="margin-bottom: 8px;"><strong>By Application:</strong> Commercial segment (retail/hospitality) dominates. Residential is the fastest expanding (8.6% CAGR).</li>
+            <li style="margin-bottom: 8px;"><strong>By Geography:</strong> North America holds ~45% share. Asia-Pacific is fastest-growing (10.9% CAGR).</li>
+            <li><strong>Growth Drivers:</strong> Base exceeding 400M smart households, falling IoT hardware costs, AI integration.</li>
+          </ul>
+        </div>
+        <div class="data-card">
+          <h3>Key Global Players</h3>
+          <p class="text-sub" style="margin-bottom: 8px;"><strong>B2B / Hospitality:</strong> Electric Mirror, Seura, CareOS</p>
+          <p class="text-sub" style="margin-bottom: 8px;"><strong>Automotive:</strong> Gentex, Ficosa</p>
+          <p class="text-sub" style="margin-bottom: 8px;"><strong>Consumer/Vanity:</strong> Simplehuman (Successful), HiMirror (Failed)</p>
+          <p class="text-sub" style="margin-bottom: 0;"><strong>Displays/Concept:</strong> Samsung, LG</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. India Smart Mirror Market -->
+    <section id="india-market" class="panel">
+      <div class="panel-header">
+        <h2>India Smart Mirror Market</h2>
+      </div>
+      <p class="text-sub" style="margin-bottom: 24px;">India's consumer market is microscopic (<span class="text-primary-accent">0.9% of global tracking</span>), but rapidly emerging via D2C segments. No established titan has locked down the category organically.</p>
+      
+      <table class="modern-table">
+        <thead>
+          <tr>
+            <th>Key Player</th>
+            <th>Market Profile</th>
+            <th>Type</th>
+            <th>Price Range (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="font-weight: 500;">Glazonoid</td>
+            <td>Largest dedicated smart mirror D2C (97+ SKUs)</td>
+            <td>LED / Android Smart</td>
+            <td class="text-primary-accent">₹5,600 – ₹69,000</td>
+          </tr>
+          <tr>
+            <td style="font-weight: 500;">Accent Mirror</td>
+            <td>Family-owned D2C / Online only</td>
+            <td>LED / Decorative</td>
+            <td class="text-primary-accent">₹4,499 – ₹39,999</td>
+          </tr>
+          <tr>
+            <td style="font-weight: 500;">Kohler India</td>
+            <td>Only massive multinational brand participating</td>
+            <td>LED / Smart IoT</td>
+            <td class="text-primary-accent">₹24,632 – ₹54,516</td>
+          </tr>
+          <tr>
+            <td style="font-weight: 500;">Amazon Aggregators</td>
+            <td>Unbranded, mass market</td>
+            <td>Budget LED</td>
+            <td class="text-primary-accent">₹1,500 – ₹5,000</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 4. India Mirror Market (Broader) -->
+    <section id="broader-market" class="panel">
+      <div class="panel-header">
+        <h2>India Mirror Market (Broader Context)</h2>
+      </div>
+      <p class="text-sub">India's overall sanitaryware industry is projected to cross <span class="text-primary-accent">80 million units by 2030</span>. Yet, over 80% of the Indian mirror market remains utterly unorganised (carpenters, local glass shops).</p>
+      
+      <h3 style="margin-top: 48px; text-align: center; color: var(--text-secondary); font-size: 14px;">Average Selling Price (ASP) Ladder</h3>
+      <div class="ladder">
+        <!-- Rendered to simulate an exponential price curve visually -->
+        <div class="ladder-bar" style="height: 15%;">
+          <div class="ladder-price">₹500</div>
+          <div class="ladder-label">Plain Mirror</div>
+        </div>
+        <div class="ladder-bar" style="height: 25%;">
+          <div class="ladder-price">₹2,500</div>
+          <div class="ladder-label">Amazon LED</div>
+        </div>
+        <div class="ladder-bar" style="height: 40%;">
+          <div class="ladder-price">₹8,800</div>
+          <div class="ladder-label">Glazonoid Mid LED</div>
+        </div>
+        <div class="ladder-bar" style="height: 60%;">
+          <div class="ladder-price">₹24,630</div>
+          <div class="ladder-label">Kohler Vitality</div>
+        </div>
+        <div class="ladder-bar" style="height: 80%;">
+          <div class="ladder-price">₹54,516</div>
+          <div class="ladder-label">Kohler Ming Smart</div>
+        </div>
+        <div class="ladder-bar aariso" style="height: 95%;">
+          <div class="ladder-price" style="color: var(--purple-200);">₹65,000</div>
+          <div class="ladder-label" style="color: var(--text-primary); font-weight: 500;">Aariso AI Smart</div>
+        </div>
+      </div>
+      <p style="text-align: center; margin-top: 16px; color: var(--text-secondary); font-size: 14px;">
+        Moving from an unbranded plain mirror to a smart mirror unlocks a <strong style="color:var(--text-primary)">110x value premium multiplier</strong>.
+      </p>
+    </section>
+
+    <!-- 5. Premiumisation Gap (CSS Chart to ensure 100% rendering) -->
+    <section id="premiumisation-gap" class="panel">
+      <div class="panel-header">
+        <h2>The Premiumisation Gap</h2>
+      </div>
+      <p class="text-sub" style="margin-bottom: 24px;">Across every bathroom product category in India, mirrors stand alone as the one category that premium brands have ignored. <strong>This is the core opportunity.</strong></p>
+      
+      <!-- CSS-only chart replacing JS Canvas -->
+      <div class="bar-chart">
+        <div class="bar-row">
+          <div class="bar-label">Tiles</div>
+          <div class="bar-track-wrapper">
+             <div class="bar-track"><div class="bar-fill" style="width: 35%;"></div></div>
+             <div class="bar-value">30-40%</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Faucets/Taps</div>
+          <div class="bar-track-wrapper">
+             <div class="bar-track"><div class="bar-fill" style="width: 30%;"></div></div>
+             <div class="bar-value">25-35%</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Showers</div>
+          <div class="bar-track-wrapper">
+             <div class="bar-track"><div class="bar-fill" style="width: 25%;"></div></div>
+             <div class="bar-value">20-30%</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Vanities</div>
+          <div class="bar-track-wrapper">
+             <div class="bar-track"><div class="bar-fill" style="width: 20%;"></div></div>
+             <div class="bar-value">15-25%</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Toilets/WCs</div>
+          <div class="bar-track-wrapper">
+             <div class="bar-track"><div class="bar-fill" style="width: 18%;"></div></div>
+             <div class="bar-value">15-22%</div>
+          </div>
+        </div>
+        <div class="bar-row" style="margin-top: 8px;">
+          <div class="bar-label" style="color: var(--text-primary); font-weight: 500;">Mirrors (Aariso)</div>
+          <div class="bar-track-wrapper">
+             <div class="bar-track"><div class="bar-fill bar-outlier" style="width: 4%;"></div></div>
+             <div class="bar-value" style="color: var(--coral-200);">3-5%</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. Bathroom Renovation Market -->
+    <section id="renovation-market" class="panel">
+      <div class="panel-header">
+        <h2>Bathroom Renovation Budgets</h2>
+      </div>
+      <div class="grid-2" style="align-items: stretch;">
+        <div class="data-card" style="display: flex; flex-direction: column; justify-content: center;">
+          <p class="text-sub">India completes <span class="text-primary-accent">15–25 million new bathrooms</span> yearly, plus 9–15 million renovations. The home improvement bath fittings market exceeds $10.6B.</p>
+          <ul class="text-sub" style="line-height: 1.8; margin-bottom: 0;">
+            <li><strong>Budget:</strong> ₹50k – ₹1L</li>
+            <li><strong>Mid-range:</strong> ₹1L – ₹2.5L</li>
+            <li><strong>Premium:</strong> ₹2.5L – ₹5L</li>
+            <li><strong>Luxury (Grohe/Kohler):</strong> ₹8L – ₹25L</li>
+          </ul>
+        </div>
+        <div class="data-card" style="display: flex; flex-direction: column; justify-content: center; background: rgba(127, 119, 221, 0.05); border-color: var(--purple-800);">
+          <h3 style="color: var(--purple-100);">Mirror's Budget Share</h3>
+          <p class="text-sub">Currently, standard mirrors consume just <span class="text-primary-accent" style="font-weight: 500;">2–5%</span> of a luxury renovation budget.</p>
+          <p class="text-sub" style="font-size: 13px; margin-top: 16px;">
+            A ₹65,000 Aariso mirror remains functionally under 10% of a luxury bathroom budget—making it highly accessible—while acting as the single most technology-differentiated asset in the room.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. TAM / SAM / SOM (Redesigned Non-Overlapping Pipeline) -->
+    <section id="tam-sam-som" class="panel">
+      <div class="panel-header">
+        <h2>Addressable Market Capture</h2>
+      </div>
+      
+      <div class="market-pipeline">
+        <div class="market-stage tam">
+          <div class="stage-circle">TAM</div>
+          <div class="stage-details">
+            <h3>Total Addressable Market</h3>
+            <p>India AI / Smart Mirrors Market by 2030</p>
+          </div>
+          <div class="stage-value">₹1,250 – 1,670 Cr</div>
+        </div>
+
+        <div class="market-stage sam">
+          <div class="stage-circle">SAM</div>
+          <div class="stage-details">
+            <h3 style="color: var(--teal-200);">Serviceable Addressable Market</h3>
+            <p>Luxury Hotel Pipeline + Premium B2C Residential</p>
+          </div>
+          <div class="stage-value text-teal">₹175 – 385 Cr/yr</div>
+        </div>
+
+        <div class="market-stage som">
+          <div class="stage-circle">SOM</div>
+          <div class="stage-details">
+            <h3 style="color: var(--purple-100);">Serviceable Obtainable Market</h3>
+            <p>3-Year Achievable Cumulative Revenue Capture</p>
+          </div>
+          <div class="stage-value">₹34 – 58 Cr</div>
+        </div>
+      </div>
+        
+      <h3 style="margin-top: 48px;">3-Year Revenue Setup & Execution</h3>
+      <table class="modern-table">
+        <thead>
+          <tr>
+            <th>Execution Phase</th>
+            <th>Target Volume (Units / Rooms)</th>
+            <th>Projected Revenue Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Year 1</strong></td>
+            <td>100-200 Hotel Rooms + 200-500 B2C</td>
+            <td style="color:var(--text-primary); font-family: monospace;">₹1.35 – 3.15 Cr</td>
+          </tr>
+          <tr>
+            <td><strong>Year 2</strong></td>
+            <td>500-1,000 Hotel Rooms + 1k-2k B2C</td>
+            <td style="color:var(--text-primary); font-family: monospace;">₹7.50 – 15.0 Cr</td>
+          </tr>
+          <tr class="row-highlight">
+            <td style="color: var(--purple-200); font-weight: 500;">Year 3</td>
+            <td style="color: var(--purple-100);">2,000-3,000 Hotel Rooms + 3k-5k B2C</td>
+            <td style="color: var(--purple-200); font-weight: 500; font-family: monospace; font-size: 16px;">₹25.0 – 40.0 Cr</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="text-sub" style="font-size: 13px; margin-top: 16px;">
+        Modelled conservatively at a blended ASP of ₹45,000 - ₹50,000. Excludes recurring software/SaaS upsells.
+      </p>
+    </section>
+
+    <!-- 8. Competitor Graveyard -->
+    <section id="competitor-graveyard" class="panel">
+      <div class="panel-header">
+        <h2>Competitor Graveyard & Survivors</h2>
+        <p class="text-sub" style="margin-top: 8px;">
+          Over $600M was written down by companies building purely B2C mirrors with low ASPs. Today, surviving players focus exclusively on B2B installations.
+        </p>
+      </div>
+      
+      <div class="grid-3">
+        <!-- Dead -->
+        <div class="data-card" style="border-top: 3px solid var(--red-600);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+            <strong style="color: var(--text-primary)">Lululemon Mirror</strong>
+            <span class="badge badge-red">Shut Down</span>
+          </div>
+          <p class="text-sub" style="font-size: 13px; line-height: 1.5;">Acquired for $500M during pandemic. Suffered massive $515M total write-down. Hardware completely discontinued as B2C fitness bubble collapsed.</p>
+        </div>
+        
+        <div class="data-card" style="border-top: 3px solid var(--red-600);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+            <strong style="color: var(--text-primary)">HiMirror</strong>
+            <span class="badge badge-red">Shut Down</span>
+          </div>
+          <p class="text-sub" style="font-size: 13px; line-height: 1.5;">$189 consumer AI skin mirror. Generated less than $1M annual revenue. Price bracket was simply too low to cover heavy tech supply-chain costs.</p>
+        </div>
+        
+        <!-- Ambiguous / Concept -->
+        <div class="data-card" style="border-top: 3px solid var(--amber-600);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+            <strong style="color: var(--text-primary)">Withings Omnia</strong>
+            <span class="badge badge-amber">Concept Only</span>
+          </div>
+          <p class="text-sub" style="font-size: 13px; line-height: 1.5;">Showcased at CES 2025. Unlaunched conceptual health mirror. Showcases significant B2C hardware hesitation—even from major established clinical brands.</p>
+        </div>
+        
+        <div class="data-card" style="border-top: 3px solid var(--amber-600);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+            <strong style="color: var(--text-primary)">Samsung & LG</strong>
+            <span class="badge badge-amber">Tech Showcases</span>
+          </div>
+          <p class="text-sub" style="font-size: 13px; line-height: 1.5;">Multiple CES demonstrations (e.g. MicroLED Beauty Mirror). Never productised commercially due to highly uncertain B2C recurring demand streams.</p>
+        </div>
+        
+        <!-- Active B2B -->
+        <div class="data-card" style="border-top: 3px solid var(--teal-600); background: rgba(29, 158, 117, 0.03);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+            <strong style="color: var(--text-primary)">CareOS / Baracoda</strong>
+            <span class="badge badge-green">Active (B2B)</span>
+          </div>
+          <p class="text-sub" style="font-size: 13px; line-height: 1.5;">Poseidon smart mirror range costs $3k-$6k. Selling successfully to hotels, premium retail, and salons. Demonstrates high-ASP B2B economic viability.</p>
+        </div>
+        
+        <div class="data-card" style="border-top: 3px solid var(--teal-600); background: rgba(29, 158, 117, 0.03);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+            <strong style="color: var(--text-primary)">Dharpan.ai (India)</strong>
+            <span class="badge badge-green">Active (B2B)</span>
+          </div>
+          <p class="text-sub" style="font-size: 13px; line-height: 1.5;">Virtual try-on mirrors for fashion retail. Scaled via €1,500/mo B2B pilots across European clients. Validates commercial Indian hardware execution.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 9. Luxury Brands -->
+    <section id="luxury-brands" class="panel">
+      <div class="panel-header">
+        <h2>Major Bathroom Brands in India</h2>
+      </div>
+      <p class="text-sub" style="margin-bottom: 24px;">A $9.3B industry dominated by massive legacy brands... who have almost perfectly completely ignored the connected technology mirror segment.</p>
+      
+      <table class="modern-table">
+        <thead>
+          <tr>
+            <th>Industry Brand</th>
+            <th>Scale & Estimated Revenue</th>
+            <th>Sell Mirrors?</th>
+            <th>Sell Smart Mirrors?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="color: var(--text-primary); font-weight: 500;">Jaquar Group</td>
+            <td>₹7,493 Cr (Largest Indian brand)</td>
+            <td><span class="badge badge-red">No (Despite lighting arm)</span></td>
+            <td><span class="badge badge-gray">No</span></td>
+          </tr>
+          <tr class="row-highlight">
+            <td style="color: var(--purple-100); font-weight: 500;">Kohler India</td>
+            <td style="color: var(--purple-100);">₹1,750–2,420 Cr</td>
+            <td><span class="badge badge-green">Yes</span></td>
+            <td><span class="badge badge-green">Yes (Vitality / Ming)</span></td>
+          </tr>
+          <tr>
+            <td style="color: var(--text-primary); font-weight: 500;">Grohe / LIXIL</td>
+            <td>~$1.8B Global Parent</td>
+            <td><span class="badge badge-red">No</span></td>
+            <td><span class="badge badge-gray">No</span></td>
+          </tr>
+          <tr>
+            <td style="color: var(--text-primary); font-weight: 500;">Hindware</td>
+            <td>₹2,800 Cr</td>
+            <td><span class="badge badge-amber">Basic Brass Frames Only</span></td>
+            <td><span class="badge badge-gray">No</span></td>
+          </tr>
+          <tr>
+            <td style="color: var(--text-primary); font-weight: 500;">Cera</td>
+            <td>₹1,984 Cr</td>
+            <td><span class="badge badge-green">Yes (Standard LED)</span></td>
+            <td><span class="badge badge-gray">No</span></td>
+          </tr>
+          <tr>
+            <td style="color: var(--text-primary); font-weight: 500;">Parryware</td>
+            <td>6.3M production pieces</td>
+            <td><span class="badge badge-red">No</span></td>
+            <td><span class="badge badge-gray">No</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 10. Hospitality -->
+    <section id="hospitality" class="panel">
+      <div class="panel-header">
+        <h2>India Luxury Hospitality Demand</h2>
+      </div>
+      <div class="grid-2">
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">118,334</div>
+          <div class="stat-label">Total rooms in the Indian construction pipeline across 906 distinct projects.</div>
+        </div>
+        <div class="data-card">
+          <div class="stat-value text-primary-accent">77</div>
+          <div class="stat-label">New 5-star & luxury hotels (yielding 11,800 rooms) launching by 2031 alone.</div>
+        </div>
+      </div>
+      
+      <div class="grid-3" style="margin-top: 24px">
+        <div class="data-card">
+          <h3 style="color: var(--purple-100);">Development Capex</h3>
+          <p class="text-sub" style="font-size: 13px;">Target development cost sits at ₹2.36 Cr per luxury hotel key in India. FF&E normally ranges 8-12%.</p>
+        </div>
+        <div class="data-card">
+          <h3 style="color: var(--purple-100);">Bathroom Allocation</h3>
+          <p class="text-sub" style="font-size: 13px;">₹7–12 lakhs per room. An Aariso mirror represents less than 1% of the total bathroom budget.</p>
+        </div>
+        <div class="data-card">
+          <h3 style="color: var(--purple-100);">Renovation Cycle</h3>
+          <p class="text-sub" style="font-size: 13px;">Full bathroom hardware renovations occur every 7–10 years (accelerated in India due to high occupancy wear).</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 11. Real Estate -->
+    <section id="real-estate" class="panel">
+      <div class="panel-header">
+        <h2>Smart Home & Elite Real Estate</h2>
+      </div>
+      <div class="grid-2">
+        <div class="data-card">
+          <h3 style="color: var(--text-primary);">Luxury Real Estate Boom</h3>
+          <p class="text-sub" style="font-size: 14px;">
+            <strong>75,000–90,000 luxury units</strong> frequently launch annually across India's top 7 tier-1 cities.<br><br>
+            The ultra-luxury (₹5 Cr+) segment grew 4x from $4B to <strong>$16B in just 4 years</strong>.<br><br>
+            Premium developers (DLF, Godrej, Lodha) now pre-install full-stack home automation hardware as a mandatory competitive differentiator.
+          </p>
+        </div>
+        <div class="data-card">
+          <h3 style="color: var(--text-primary);">The Addressable Buyer</h3>
+          <p class="text-sub" style="font-size: 14px;">
+            India currently holds <strong>378,810 dollar-millionaires</strong> (jumping by 33,000+ in 2024 alone).<br><br>
+            More than 15% of Indian HNIs are under 30 (highly tech-native premium spenders).<br><br>
+            The affluent segment ($10k+/yr) is accelerating from 60M to 100M by 2027. They want proactive self-care smart integrations.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 12. VC Cheat Sheet -->
+    <section id="cheat-sheet" class="panel">
+      <div class="panel-header">
+        <h2>VC Dialogue Cheat Sheet</h2>
+      </div>
+      <div class="cheat-sheet-grid">
+        
+        <div class="fact-item">
+          <div class="fact-metric">1 / 130k</div>
+          <div class="fact-context">Dermatologists per capita in India (26x worse coverage than the US).</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">$15 vs $313</div>
+          <div class="fact-context">India per capita beauty expenditure compared to the USA. Monumental headroom.</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">0.9%</div>
+          <div class="fact-context">India's current share of the global smart mirror category. Nascent ecosystem.</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">80%</div>
+          <div class="fact-context">Highly fragmented unorganised sector's share of India's bathroom mirror market.</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">110x</div>
+          <div class="fact-context">Astonishing value multiplier between standard mirror (₹500) and premium smart mirror (₹55k).</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">Only 1</div>
+          <div class="fact-context">Major bathroom titan brand actively selling smart mirrors within India (Kohler).</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">$515M</div>
+          <div class="fact-context">Lost by Lululemon on their B2C mirror bet. Vindicates Aariso's firm B2B-first necessity.</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">29.1%</div>
+          <div class="fact-context">Staggering CAGR of India's Smart Home Market ($5.2B jumping to $24.1B by 2031).</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">34.8%</div>
+          <div class="fact-context">Share of AI tooling within the $66 billion global Beauty Tech hardware market.</div>
+        </div>
+        <div class="fact-item">
+          <div class="fact-metric">₹7.4k Cr</div>
+          <div class="fact-context">Annual sales revenue of Jaquar (India's #1). They sell zero LED / smart mirrors currently.</div>
+        </div>
+        
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // 1. Intersection Observer for Scroll Micro-Animations
+    const observerOptions = {
+      root: null,
+      rootMargin: '0px',
+      threshold: 0.15
+    };
+
+    const observer = new IntersectionObserver((entries, observer) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+          
+          // Update Sidebar Active State
+          const id = entry.target.getAttribute('id');
+          document.querySelectorAll('nav a').forEach(link => {
+            link.classList.remove('active');
+            if (link.getAttribute('href') === `#${id}`) {
+              link.classList.add('active');
+            }
+          });
+        }
+      });
+    }, observerOptions);
+
+    document.querySelectorAll('.panel').forEach(panel => {
+      observer.observe(panel);
+    });
+
+    // 2. Smooth scroll offset adjustment for sticky header
+    document.querySelectorAll('nav a').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+        window.scrollTo({
+          top: targetElement.offsetTop - 40,
+          behavior: 'smooth'
+        });
+      });
+    });
+  </script>
+</body>
+</html>

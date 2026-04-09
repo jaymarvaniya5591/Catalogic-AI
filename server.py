@@ -11,6 +11,12 @@ from zipfile import ZipFile
 
 from config import UPLOAD_DIR, OUTPUT_DIR
 from scraper import scrape_product_url
+from catalog_templates import (
+    PRODUCT_CATALOG,
+    get_all_questions,
+    get_defaults,
+    get_catalog_slots,
+)
 from gemini_service import (
     detect_product_category,
     analyze_competitor_catalog,
@@ -18,6 +24,7 @@ from gemini_service import (
     generate_master_context_block,
     generate_hero_image,
     generate_catalog_image,
+    detect_product_color,
 )
 
 BASE_DIR = Path(__file__).parent
@@ -30,6 +37,38 @@ app = FastAPI(title="Ruva Catalog Generator")
 
 # In-memory session storage
 sessions = {}
+
+
+def _persist_session(session_id: str):
+    """Save session to disk so it survives server restarts."""
+    session = sessions.get(session_id)
+    if not session:
+        return
+    path = Path(OUTPUT_DIR) / session_id / "session.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(path, "w") as f:
+            json.dump(session, f, default=str)
+    except Exception as e:
+        print(f"[SESSION] Failed to persist {session_id}: {e}")
+
+
+@app.on_event("startup")
+async def load_sessions_from_disk():
+    output_path = Path(OUTPUT_DIR)
+    if not output_path.exists():
+        return
+    count = 0
+    for session_file in output_path.glob("*/session.json"):
+        session_id = session_file.parent.name
+        try:
+            with open(session_file) as f:
+                sessions[session_id] = json.load(f)
+            count += 1
+        except Exception as e:
+            print(f"[SESSION] Failed to load {session_id}: {e}")
+    if count:
+        print(f"[SESSION] Loaded {count} session(s) from disk")
 
 
 # ── Helpers ──
@@ -58,6 +97,9 @@ def create_session(session_id: str) -> dict:
         "catalog_images": [],
         "costs": [],
         "category": None,
+        # Scratch mode fields
+        "mode": None,           # "competitor" | "scratch"
+        "scratch_config": None, # {"category": str, "product_type": str}
     }
     sessions[session_id] = session
     return session
@@ -496,6 +538,21 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "ruva-catalog-generator"}
+
+
+@app.get("/api/session/{session_id}")
+async def api_get_session(session_id: str):
+    """Return enough session state for the frontend to restore its position."""
+    session = sessions.get(session_id)
+    if not session:
+        return {"success": False, "error": "Session not found"}
+    return {
+        "success": True,
+        "hero_image": session.get("hero_image"),
+        "catalog_images": session.get("catalog_results", session.get("catalog_images", [])),
+        "max_step": session.get("max_step", 0),
+        "mode": session.get("mode"),
+    }
 
 
 @app.post("/api/scrape")
@@ -947,6 +1004,169 @@ async def submit_answers(
     return {"success": True, "answers": answers, "selected_additions": selected_addition_ids}
 
 
+# ── Scratch Mode Endpoints ──
+
+@app.post("/api/scratch/init")
+async def api_scratch_init(
+    session_id: str = Form(...),
+    category: str = Form(...),
+    product_type: str = Form(...),
+):
+    """Initialise a scratch-mode session and return the question groups for the product."""
+    # Create session if it doesn't exist (scratch mode starts here)
+    if session_id not in sessions:
+        create_session(session_id)
+
+    prod_data = PRODUCT_CATALOG.get(category, {}).get("products", {}).get(product_type)
+    if not prod_data:
+        return {"success": False, "error": f"Unknown category/product: {category}/{product_type}"}
+
+    session = sessions[session_id]
+    session["mode"] = "scratch"
+    session["scratch_config"] = {"category": category, "product_type": product_type}
+
+    # Return the question groups so the frontend can render them.
+    question_groups = []
+    for group in prod_data.get("question_groups", []):
+        question_groups.append({
+            "group_id": group["group_id"],
+            "group_label": group["group_label"],
+            "questions": group["questions"],
+        })
+
+    # Return non-hero slots metadata for slot selection UI
+    catalog_slot_meta = [
+        {
+            "slot_id": s["slot_id"],
+            "name": s["name"],
+            "tagline": s.get("tagline", ""),
+            "image_type": s.get("image_type", "other"),
+        }
+        for s in prod_data.get("catalog_slots", [])
+        if not s.get("is_hero")
+    ]
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "product_label": prod_data["label"],
+        "question_groups": question_groups,
+        "catalog_slots": catalog_slot_meta,
+    }
+
+
+@app.post("/api/scratch/answers")
+async def api_scratch_answers(
+    session_id: str = Form(...),
+    answers_json: str = Form("{}"),
+    image_qids_json: str = Form("[]"),
+    image_files: list[UploadFile] = File([]),
+    selected_slots_json: str = Form("[]"),
+):
+    """
+    Save scratch-mode answers, merging template defaults for anything left blank.
+    Also saves product images if re-submitted here (they may have been uploaded in step 2 already).
+    """
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+
+    session = sessions[session_id]
+    cfg = session.get("scratch_config") or {}
+    category = cfg.get("category", "")
+    product_type = cfg.get("product_type", "")
+
+    try:
+        answers = json.loads(answers_json) if answers_json else {}
+    except Exception:
+        answers = {}
+
+    try:
+        image_qids = json.loads(image_qids_json) if image_qids_json else []
+    except Exception:
+        image_qids = []
+
+    # Load default values from template; apply for any missing/blank answers
+    defaults = get_defaults(category, product_type)
+    all_questions = get_all_questions(category, product_type)
+    for q in all_questions:
+        qid = q["id"]
+        attr_id = q.get("attribute_id", "")
+        if not answers.get(qid):
+            # Try the default from the question definition
+            dv = q.get("default_value")
+            if dv is not None:
+                answers[qid] = str(dv)
+
+    # Save any uploaded answer images (e.g., dimension drawing)
+    for i, file in enumerate(image_files or []):
+        qid = str(image_qids[i]) if i < len(image_qids) else f"image_qid_{i}"
+        ext = Path(file.filename).suffix or ".jpg"
+        dir_path = Path(UPLOAD_DIR) / session_id / "answers"
+        dir_path.mkdir(parents=True, exist_ok=True)
+        filename = f"{qid}{ext}"
+        file_path = dir_path / filename
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+        answers[qid] = f"/uploads/{session_id}/answers/{filename}"
+
+    # Parse and store selected slot ids
+    try:
+        selected_slots = json.loads(selected_slots_json) if selected_slots_json else []
+    except Exception:
+        selected_slots = []
+
+    # If no selection sent, default to all non-hero slots
+    if not selected_slots:
+        all_slots = get_catalog_slots(category, product_type)
+        selected_slots = [s["slot_id"] for s in all_slots if not s.get("is_hero")]
+
+    session["selected_scratch_slots"] = selected_slots
+    session["answers"] = answers
+
+    # Build compiled_attributes from answers using attribute_id mapping
+    if "compiled_attributes" not in session:
+        session["compiled_attributes"] = {}
+
+    # Start from template defaults so everything is populated
+    for attr_id, default_val in defaults.items():
+        session["compiled_attributes"].setdefault(attr_id, default_val)
+
+    # Override with user-submitted values
+    for q in all_questions:
+        qid = q.get("id")
+        attr_id = q.get("attribute_id")
+        if qid and attr_id and answers.get(qid):
+            session["compiled_attributes"][attr_id] = answers[qid]
+
+    return {"success": True, "answers": answers}
+
+
+@app.post("/api/scratch/detect-color")
+async def api_scratch_detect_color(payload: dict):
+    """
+    Accept a product image URL path (already uploaded) and use Gemini
+    to detect the precise color/finish. Returns {color, description}.
+    """
+    session_id = payload.get("session_id", "")
+    image_url = payload.get("image_url", "")  # e.g. /uploads/{sid}/product/img_0.jpg
+
+    if session_id not in sessions:
+        return {"success": False, "error": "Invalid session"}
+    if not image_url:
+        return {"success": False, "error": "No image_url provided"}
+
+    try:
+        result = await detect_product_color(image_url)
+        return {
+            "success": True,
+            "color": result.get("color", ""),
+            "description": result.get("description", ""),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ── Phase 4/5: Hero + Catalog Generation ──
 
 @app.post("/api/generate-hero")
@@ -1017,6 +1237,8 @@ async def api_generate_hero(
 
         session["hero_image"] = hero_url
         session["costs"].append(cost)
+        session["max_step"] = max(session.get("max_step", 0), 4)
+        _persist_session(session_id)
         total_cost_inr = sum(c.get("cost_inr", 0) for c in session["costs"])
         return {"success": True, "hero_image_url": hero_url, "mode": "generated", "costs": [cost], "total_cost_inr": total_cost_inr}
     except asyncio.TimeoutError:
@@ -1043,44 +1265,85 @@ async def api_generate_catalog_stream(session_id: str):
 
         return StreamingResponse(gen_err(), media_type="text/event-stream")
 
-    analysis_images = analysis.get("images", []) or []
-    by_index = {int(img.get("index", 0)): img for img in analysis_images}
-    recommended_order = analysis.get("recommended_order") or [img.get("index", 0) for img in analysis_images]
-
+    # ── Build job list (branches on mode) ──────────────────────────────────
     jobs: list[dict] = []
-    for idx in recommended_order:
-        if int(idx) not in by_index:
-            continue
-        img = by_index[int(idx)]
-        competitor_url = competitor_images[int(idx)] if int(idx) < len(competitor_images) else None
-        jobs.append({
-            "key": f"competitor_{int(idx)}",
-            "type": "competitor",
-            "image_type": img.get("type") or "other",
-            "reference_intent_image_url": competitor_url,
-            "style_prompt": img.get("style_prompt") or "",
-            "prompt_fragment": f"INTENT: {img.get('intent') or ''}\nVISUAL ELEMENTS: {', '.join([str(x) for x in (img.get('key_elements') or [])])}\nDETAILED SCENE DESCRIPTION: {img.get('summary') or ''}",
-            "image_key": f"competitor_{int(idx)}",
-            "image_index": int(idx),
-        })
+    by_index: dict = {}  # populated in competitor mode; referenced in run_job closure
 
-    additions = analysis.get("suggested_additions", []) or []
-    additions_by_id = {a.get("id"): a for a in additions if a.get("id")}
-    for aid in selected_addition_ids:
-        add = additions_by_id.get(aid)
-        if not add:
-            continue
-        jobs.append({
-            "key": f"addition_{aid}",
-            "type": "addition",
-            "reference_intent_image_url": None,
-            "style_prompt": "Consistent studio product photography styling (match the HERO look).",
-            "prompt_fragment": add.get("generation_prompt_fragment") or add.get("title") or aid,
-            "image_key": f"addition_{aid}",
-            "addition_id": aid,
-        })
+    if session.get("mode") == "scratch":
+        # Scratch mode: use pre-designed catalog slots from the template.
+        cfg = session.get("scratch_config") or {}
+        cat = cfg.get("category", "")
+        ptype = cfg.get("product_type", "")
+        slots = get_catalog_slots(cat, ptype)
+        attrs = compiled_attributes  # already merged with defaults in /api/scratch/answers
 
-    # For prompt_fragment we may have non-string types; normalize
+        selected_slot_ids = session.get("selected_scratch_slots") or [s["slot_id"] for s in slots if not s.get("is_hero")]
+
+        for slot in slots:
+            if slot.get("is_hero"):
+                continue  # hero already generated separately
+
+            slot_id = slot["slot_id"]
+            if slot_id not in selected_slot_ids:
+                continue  # user deselected this image
+
+            # Fill template variables in the prompt fragment
+            frag = slot.get("prompt_fragment", "")
+            try:
+                frag = frag.format_map({k: v for k, v in attrs.items()})
+            except (KeyError, ValueError):
+                pass  # unfilled variables stay as-is; Gemini can interpret them
+
+            jobs.append({
+                "key": f"scratch_{slot_id}",
+                "type": "scratch",
+                "image_type": slot.get("image_type") or "other",
+                "reference_intent_image_url": None,
+                "style_prompt": f"Premium {slot['name']} image for a {ptype} product catalog. Amazon A+ quality.",
+                "prompt_fragment": frag,
+                "image_key": f"scratch_{slot_id}",
+                "slot_id": slot_id,
+            })
+
+    else:
+        # Competitor mode: original logic
+        analysis_images = analysis.get("images", []) or []
+        by_index = {int(img.get("index", 0)): img for img in analysis_images}
+        recommended_order = analysis.get("recommended_order") or [img.get("index", 0) for img in analysis_images]
+
+        for idx in recommended_order:
+            if int(idx) not in by_index:
+                continue
+            img = by_index[int(idx)]
+            competitor_url = competitor_images[int(idx)] if int(idx) < len(competitor_images) else None
+            jobs.append({
+                "key": f"competitor_{int(idx)}",
+                "type": "competitor",
+                "image_type": img.get("type") or "other",
+                "reference_intent_image_url": competitor_url,
+                "style_prompt": img.get("style_prompt") or "",
+                "prompt_fragment": f"INTENT: {img.get('intent') or ''}\nVISUAL ELEMENTS: {', '.join([str(x) for x in (img.get('key_elements') or [])])}\nDETAILED SCENE DESCRIPTION: {img.get('summary') or ''}",
+                "image_key": f"competitor_{int(idx)}",
+                "image_index": int(idx),
+            })
+
+        additions = analysis.get("suggested_additions", []) or []
+        additions_by_id = {a.get("id"): a for a in additions if a.get("id")}
+        for aid in selected_addition_ids:
+            add = additions_by_id.get(aid)
+            if not add:
+                continue
+            jobs.append({
+                "key": f"addition_{aid}",
+                "type": "addition",
+                "reference_intent_image_url": None,
+                "style_prompt": "Consistent studio product photography styling (match the HERO look).",
+                "prompt_fragment": add.get("generation_prompt_fragment") or add.get("title") or aid,
+                "image_key": f"addition_{aid}",
+                "addition_id": aid,
+            })
+
+    # Normalise prompt_fragment (may be a list in competitor mode)
     for job in jobs:
         frag = job.get("prompt_fragment")
         if isinstance(frag, list):
@@ -1193,6 +1456,12 @@ async def api_generate_catalog_stream(session_id: str):
             completed += 1
 
             # Update session state as we go (for download/regenerate later)
+            session.setdefault("catalog_results", []).append({
+                "key": event["key"],
+                "status": event.get("status"),
+                "image_url": event.get("image_url"),
+                "error": event.get("error"),
+            })
             if event.get("status") == "success":
                 session.setdefault("catalog_images", []).append({
                     "key": event["key"],
@@ -1207,6 +1476,8 @@ async def api_generate_catalog_stream(session_id: str):
             if not t.done():
                 t.cancel()
 
+        session["max_step"] = max(session.get("max_step", 0), 5)
+        _persist_session(session_id)
         yield "event: catalog_done\ndata: " + json.dumps({"total": total}) + "\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
@@ -1240,7 +1511,29 @@ async def api_regenerate_catalog(
     regen_image_type = "other"
     extra_refs = None
 
-    if image_key.startswith("competitor_"):
+    if image_key.startswith("scratch_"):
+        # Scratch mode regenerate: look up slot from template
+        slot_id = image_key.replace("scratch_", "", 1)
+        cfg = session.get("scratch_config") or {}
+        slots = get_catalog_slots(cfg.get("category", ""), cfg.get("product_type", ""))
+        slot = next((s for s in slots if s["slot_id"] == slot_id), None)
+        if not slot:
+            return {"success": False, "error": "IMAGE_NOT_FOUND"}
+        attrs = session.get("compiled_attributes", {}) or {}
+        frag = slot.get("prompt_fragment", "")
+        try:
+            frag = frag.format_map({k: v for k, v in attrs.items()})
+        except (KeyError, ValueError):
+            pass
+        if feedback and isinstance(feedback, str):
+            frag = frag + f"\nUser feedback for regeneration: {feedback}"
+        reference_intent_image_url = None
+        style_prompt = f"Premium {slot['name']} image for a {cfg.get('product_type', 'product')} catalog. Amazon A+ quality."
+        prompt_fragment = frag
+        regen_image_type = slot.get("image_type") or "other"
+        if "dimension" in slot_id:
+            extra_refs = session.get("product", {}).get("images") or None
+    elif image_key.startswith("competitor_"):
         idx = int(image_key.replace("competitor_", ""))
         img = by_index.get(idx)
         if not img:
@@ -1263,8 +1556,9 @@ async def api_regenerate_catalog(
     else:
         return {"success": False, "error": "INVALID_IMAGE_KEY"}
 
-    # Append any regeneration feedback (if provided by future UI)
-    if feedback and isinstance(feedback, str):
+    # Append any regeneration feedback for competitor/addition modes
+    # (scratch mode already handles feedback inline above)
+    if feedback and isinstance(feedback, str) and not image_key.startswith("scratch_"):
         prompt_fragment = (prompt_fragment or "") + f"\nUser feedback: {feedback}"
 
     try:
@@ -1285,6 +1579,16 @@ async def api_regenerate_catalog(
         )
         session.setdefault("catalog_images", []).append({"key": image_key, "url": image_url})
         session["costs"].append(cost)
+        # Update catalog_results for restore endpoint
+        results = session.setdefault("catalog_results", [])
+        existing = next((r for r in results if r["key"] == image_key), None)
+        if existing:
+            existing["status"] = "success"
+            existing["image_url"] = image_url
+            existing["error"] = None
+        else:
+            results.append({"key": image_key, "status": "success", "image_url": image_url, "error": None})
+        _persist_session(session_id)
         return {"success": True, "image_url": image_url}
     except Exception as e:
         return {"success": False, "error": str(e)}

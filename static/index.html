@@ -48,51 +48,92 @@
         </nav>
 
         <!-- ═══════════════════════════════════════════ -->
-        <!-- Step 1: Competitor Reference                -->
+        <!-- Step 1: Mode Selection + Competitor / Scratch -->
         <!-- ═══════════════════════════════════════════ -->
         <section class="step-section active" id="step-1">
             <div class="step-card">
-                <h2>Competitor Reference</h2>
-                <p class="step-description">Paste a competitor's Amazon or Flipkart product URL, or upload their catalog images manually.</p>
+                <h2>How would you like to create your catalog?</h2>
+                <p class="step-description">Mirror a competitor's listing, or build a professional catalog from scratch using our product templates.</p>
 
-                <!-- Mode toggle -->
-                <div class="input-tabs">
-                    <button class="tab-btn active" data-tab="url">Paste URL</button>
-                    <button class="tab-btn" data-tab="upload">Upload Images</button>
-                </div>
-
-                <!-- URL mode -->
-                <div class="tab-content active" id="tab-url">
-                    <div class="input-group">
-                        <input type="url" id="competitor-url" class="text-input"
-                               placeholder="https://www.amazon.in/dp/..." />
-                        <button class="btn btn-primary" id="btn-scrape">Analyze URL</button>
-                    </div>
-                    <p class="input-hint">Supports Amazon.in, Amazon.com, and Flipkart product pages</p>
-                    <div id="scraped-results" style="display: none; margin-top: 20px;"></div>
-                </div>
-
-                <!-- Upload mode -->
-                <div class="tab-content" id="tab-upload">
-                    <div class="upload-zone" id="competitor-upload-zone">
-                        <div class="upload-icon">
-                            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="17 8 12 3 7 8"/>
-                                <line x1="12" y1="3" x2="12" y2="15"/>
+                <!-- ── Mode chooser ── -->
+                <div class="mode-chooser" id="mode-chooser">
+                    <div class="mode-card" id="mode-card-competitor" onclick="selectMode('competitor')">
+                        <div class="mode-card-icon">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                                <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
                             </svg>
                         </div>
-                        <p>Drag & drop competitor catalog images here</p>
-                        <p class="upload-hint">or click to browse</p>
-                        <input type="file" id="competitor-files" multiple accept="image/*" hidden />
+                        <div class="mode-card-title">From Competitor Reference</div>
+                        <div class="mode-card-desc">Paste a competitor URL or upload their images — we mirror the catalog structure with your product's look.</div>
                     </div>
-                    <div class="image-preview-grid" id="competitor-preview-grid"></div>
-                    <div class="input-group stacked" style="margin-top: 16px;">
-                        <label class="input-label">Product Description (optional)</label>
-                        <textarea id="competitor-description" class="text-input textarea"
-                                  placeholder="Paste the competitor's product description here..."
-                                  rows="3"></textarea>
+                    <div class="mode-card" id="mode-card-scratch" onclick="selectMode('scratch')">
+                        <div class="mode-card-icon">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                            </svg>
+                        </div>
+                        <div class="mode-card-title">Create from Scratch</div>
+                        <div class="mode-card-desc">Choose your product category — we generate a complete, world-class catalog using pre-designed templates.</div>
                     </div>
+                </div>
+
+                <!-- ── Competitor flow (shown after selecting competitor mode) ── -->
+                <div id="competitor-flow" style="display:none;">
+                    <!-- Input tabs -->
+                    <div class="input-tabs">
+                        <button class="tab-btn active" data-tab="url">Paste URL</button>
+                        <button class="tab-btn" data-tab="upload">Upload Images</button>
+                    </div>
+
+                    <!-- URL mode -->
+                    <div class="tab-content active" id="tab-url">
+                        <div class="input-group">
+                            <input type="url" id="competitor-url" class="text-input"
+                                   placeholder="https://www.amazon.in/dp/..." />
+                            <button class="btn btn-primary" id="btn-scrape">Analyze URL</button>
+                        </div>
+                        <p class="input-hint">Supports Amazon.in, Amazon.com, and Flipkart product pages</p>
+                        <div id="scraped-results" style="display: none; margin-top: 20px;"></div>
+                    </div>
+
+                    <!-- Upload mode -->
+                    <div class="tab-content" id="tab-upload">
+                        <div class="upload-zone" id="competitor-upload-zone">
+                            <div class="upload-icon">
+                                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                            </div>
+                            <p>Drag & drop competitor catalog images here</p>
+                            <p class="upload-hint">or click to browse</p>
+                            <input type="file" id="competitor-files" multiple accept="image/*" hidden />
+                        </div>
+                        <div class="image-preview-grid" id="competitor-preview-grid"></div>
+                        <div class="input-group stacked" style="margin-top: 16px;">
+                            <label class="input-label">Product Description (optional)</label>
+                            <textarea id="competitor-description" class="text-input textarea"
+                                      placeholder="Paste the competitor's product description here..."
+                                      rows="3"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Scratch flow (shown after selecting scratch mode) ── -->
+                <div id="scratch-flow" style="display:none;">
+                    <div class="scratch-selector">
+                        <div class="selector-label">Category</div>
+                        <div class="pill-group" id="category-pills">
+                            <div class="scratch-pill selected" data-value="bathroom_products">Bathroom Products</div>
+                        </div>
+                        <div class="selector-label" style="margin-top:16px;">Product Type</div>
+                        <div class="pill-group" id="product-pills">
+                            <div class="scratch-pill selected" data-value="toilet">Toilets / EWC</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" id="btn-scratch-continue" style="margin-top:24px;">Continue</button>
                 </div>
 
                 <!-- Status + Progress -->
@@ -102,8 +143,8 @@
                     <span class="sp-text" id="step1-progress-text"></span>
                 </div>
 
-                <!-- Navigation -->
-                <div class="step-nav">
+                <!-- Navigation (competitor mode only) -->
+                <div class="step-nav" id="step1-nav" style="display:none;">
                     <div></div>
                     <button class="btn btn-primary" id="btn-step1-next" disabled>Continue</button>
                 </div>
@@ -153,25 +194,39 @@
         </section>
 
         <!-- ═══════════════════════════════════════════ -->
-        <!-- Step 3: Deep Analysis & Smart Questions     -->
+        <!-- Step 3: Analysis / Scratch Questions        -->
         <!-- ═══════════════════════════════════════════ -->
         <section class="step-section" id="step-3">
             <div class="step-card">
-                <h2>Review & Customize</h2>
-                <p class="step-description">We extracted details from the competitor catalog. Adjust anything that should differ for your product.</p>
 
-                <!-- Section 1: Attribute Breakdown -->
-                <div class="attr-breakdown" id="attr-breakdown">
-                    <div class="section-label">Attribute Breakdown</div>
-                    <div id="attr-cards" class="attr-cards">
-                        <div class="placeholder-message"><div class="spinner"></div><p>Analyzing images...</p></div>
+                <!-- ── Competitor mode ── -->
+                <div id="step3-competitor-content">
+                    <h2>Review & Customize</h2>
+                    <p class="step-description">We extracted details from the competitor catalog. Adjust anything that should differ for your product.</p>
+
+                    <!-- Attribute Breakdown -->
+                    <div class="attr-breakdown" id="attr-breakdown">
+                        <div class="section-label">Attribute Breakdown</div>
+                        <div id="attr-cards" class="attr-cards">
+                            <div class="placeholder-message"><div class="spinner"></div><p>Analyzing images...</p></div>
+                        </div>
+                    </div>
+
+                    <!-- Suggested Images -->
+                    <div class="suggested-section" id="suggested-section" style="display:none;">
+                        <div class="section-label">Suggested Images <span class="section-label-hint">Select up to 2</span></div>
+                        <div id="suggested-list" class="suggested-list"></div>
                     </div>
                 </div>
 
-                <!-- Section 2: Suggested Images -->
-                <div class="suggested-section" id="suggested-section" style="display:none;">
-                    <div class="section-label">Suggested Images <span class="section-label-hint">Select up to 2</span></div>
-                    <div id="suggested-list" class="suggested-list"></div>
+                <!-- ── Scratch mode ── -->
+                <div id="step3-scratch-content" style="display:none;">
+                    <h2>Customize Your Catalog</h2>
+                    <p class="step-description">Select the images you want, then fill in your product details. All fields are pre-filled with industry-standard defaults.</p>
+                    <!-- Slot selection grid (rendered by renderSlotSelector) -->
+                    <div id="scratch-slot-selector"></div>
+                    <!-- Product question groups (rendered by renderScratchQuestions) -->
+                    <div id="scratch-question-groups"></div>
                 </div>
 
                 <!-- Status + Progress -->
